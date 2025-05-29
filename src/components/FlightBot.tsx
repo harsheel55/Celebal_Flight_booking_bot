@@ -1,8 +1,9 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Send, Bot, User, Plane } from 'lucide-react';
+import { Send, Bot, User, Plane, CreditCard, CheckCircle } from 'lucide-react';
 import FlightCard from './FlightCard';
 import { searchFlights, Flight } from '@/services/flightService';
 import { useToast } from '@/hooks/use-toast';
@@ -12,6 +13,7 @@ interface Message {
   text: string;
   isBot: boolean;
   flights?: Flight[];
+  selectedFlight?: { flight: Flight; price: number };
   timestamp: Date;
 }
 
@@ -19,7 +21,7 @@ const FlightBot = () => {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
-      text: "Hello! I'm your flight booking assistant. I can help you search for flights, compare prices, and find the best deals. Just tell me where you want to go and when!",
+      text: "Hello! I'm your flight booking assistant. I can help you search for flights, compare prices, and book tickets directly through our chat. Just tell me where you want to go and when!\n\nTry saying: 'Find flights from New York to London' or 'Book a flight from LAX to JFK'",
       isBot: true,
       timestamp: new Date()
     }
@@ -40,23 +42,19 @@ const FlightBot = () => {
   const extractFlightDetails = (message: string) => {
     console.log('Original message:', message);
     
-    // More flexible pattern matching for flight search
     let from = '';
     let to = '';
     let date = '';
 
-    // Try multiple patterns for "from" location
+    // Enhanced patterns for better extraction
     const fromPatterns = [
-      /from\s+([a-zA-Z\s]{2,}?)(?:\s+to\s|\s+$)/i,
-      /leaving\s+([a-zA-Z\s]{2,}?)(?:\s+to\s|\s+going\s|\s+$)/i,
-      /departing\s+([a-zA-Z\s]{2,}?)(?:\s+to\s|\s+$)/i
+      /(?:from|leaving|departing)\s+([a-zA-Z\s]{2,}?)(?:\s+to\s|\s+going\s|\s+arriving\s|\s+$)/i,
+      /\b([A-Z]{3})\s+to\s+/i
     ];
 
-    // Try multiple patterns for "to" location  
     const toPatterns = [
-      /to\s+([a-zA-Z\s]{2,}?)(?:\s+on\s|\s+$)/i,
-      /going\s+to\s+([a-zA-Z\s]{2,}?)(?:\s+on\s|\s+$)/i,
-      /destination\s+([a-zA-Z\s]{2,}?)(?:\s+on\s|\s+$)/i
+      /(?:to|going|arriving|destination)\s+([a-zA-Z\s]{2,}?)(?:\s+on\s|\s+$|\s+tomorrow|\s+today)/i,
+      /\s+to\s+([A-Z]{3})\b/i
     ];
 
     // Extract from location
@@ -68,7 +66,7 @@ const FlightBot = () => {
       }
     }
 
-    // Extract to location
+    // Extract to location  
     for (const pattern of toPatterns) {
       const match = message.match(pattern);
       if (match && match[1]) {
@@ -77,31 +75,12 @@ const FlightBot = () => {
       }
     }
 
-    // If the above patterns didn't work, try a different approach
-    if (!from || !to) {
-      // Look for airport codes (3 letters)
-      const airportCodes = message.match(/\b[A-Z]{3}\b/g);
-      if (airportCodes && airportCodes.length >= 2) {
-        from = from || airportCodes[0];
-        to = to || airportCodes[1];
-      }
-      
-      // Try simpler patterns
-      if (!from || !to) {
-        const simpleFromMatch = message.match(/(?:from|leaving)\s+([a-zA-Z\s]+)/i);
-        const simpleToMatch = message.match(/(?:to|going)\s+([a-zA-Z\s]+)/i);
-        
-        if (simpleFromMatch) from = from || simpleFromMatch[1].trim();
-        if (simpleToMatch) to = to || simpleToMatch[1].trim();
-      }
-    }
-
-    // Clean up extracted locations (remove common words)
+    // Clean up extracted locations
     from = from.replace(/\b(flights?|flight|plane|airplane)\b/gi, '').trim();
     to = to.replace(/\b(flights?|flight|plane|airplane)\b/gi, '').trim();
 
     // Extract date
-    const dateMatch = message.match(/on\s+([0-9-\/]+)/i) || message.match(/([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+    const dateMatch = message.match(/(?:on|for)\s+([0-9-\/]+)/i) || message.match(/([0-9]{4}-[0-9]{2}-[0-9]{2})/);
     if (dateMatch) {
       date = dateMatch[1];
     }
@@ -109,6 +88,39 @@ const FlightBot = () => {
     const result = { from, to, date };
     console.log('Extracted flight details:', result);
     return result;
+  };
+
+  const handleFlightSelection = (flight: Flight, price: number) => {
+    const bookingMessage: Message = {
+      id: Date.now().toString(),
+      text: `Great choice! You selected ${flight.airline?.name} flight ${flight.flight?.iata} for $${price}.\n\nFlight Details:\n• From: ${flight.departure?.airport} (${flight.departure?.iata})\n• To: ${flight.arrival?.airport} (${flight.arrival?.iata})\n• Price: $${price}\n\nWould you like to proceed with booking? Just type 'book this flight' or 'confirm booking' to continue.`,
+      isBot: true,
+      selectedFlight: { flight, price },
+      timestamp: new Date()
+    };
+
+    setMessages(prev => [...prev, bookingMessage]);
+    
+    toast({
+      title: "Flight Selected!",
+      description: `${flight.airline?.name} flight ${flight.flight?.iata} - $${price}`,
+    });
+  };
+
+  const handleBookingConfirmation = (selectedFlight: { flight: Flight; price: number }) => {
+    const confirmationMessage: Message = {
+      id: Date.now().toString(),
+      text: `🎉 Booking Confirmed!\n\nYour flight has been successfully booked:\n\n✈️ Flight: ${selectedFlight.flight.airline?.name} ${selectedFlight.flight.flight?.iata}\n📍 Route: ${selectedFlight.flight.departure?.iata} → ${selectedFlight.flight.arrival?.iata}\n💰 Total: $${selectedFlight.price}\n📧 Confirmation sent to your email\n\nBooking Reference: FB${Math.random().toString(36).substring(2, 8).toUpperCase()}\n\nThank you for choosing our service! Have a great trip! ✈️`,
+      isBot: true,
+      timestamp: new Date()
+    };
+
+    setMessages(prev => [...prev, confirmationMessage]);
+    
+    toast({
+      title: "Booking Confirmed! ✈️",
+      description: "Your flight has been successfully booked!",
+    });
   };
 
   const handleSendMessage = async () => {
@@ -122,11 +134,26 @@ const FlightBot = () => {
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const currentInput = inputValue;
     setInputValue('');
     setIsLoading(true);
 
+    // Check if user wants to book a selected flight
+    const lastBotMessage = messages.filter(m => m.isBot).pop();
+    if (lastBotMessage?.selectedFlight && 
+        (currentInput.toLowerCase().includes('book') || 
+         currentInput.toLowerCase().includes('confirm') ||
+         currentInput.toLowerCase().includes('yes'))) {
+      
+      setTimeout(() => {
+        handleBookingConfirmation(lastBotMessage.selectedFlight!);
+        setIsLoading(false);
+      }, 1500);
+      return;
+    }
+
     // Extract flight details from message
-    const flightDetails = extractFlightDetails(inputValue.toLowerCase());
+    const flightDetails = extractFlightDetails(currentInput.toLowerCase());
     
     console.log('Processing flight search with details:', flightDetails);
 
@@ -137,7 +164,7 @@ const FlightBot = () => {
         
         const botResponse: Message = {
           id: (Date.now() + 1).toString(),
-          text: `I found ${flights.length} flights from ${flightDetails.from} to ${flightDetails.to}. Here are the available options:`,
+          text: `I found ${flights.length} flights from ${flightDetails.from} to ${flightDetails.to}${flightDetails.date ? ` for ${flightDetails.date}` : ''}. Here are the available options:\n\nClick "Select Flight" on any option to proceed with booking!`,
           isBot: true,
           flights: flights,
           timestamp: new Date()
@@ -171,7 +198,7 @@ const FlightBot = () => {
       console.log('Missing flight details, showing help message');
       const botResponse: Message = {
         id: (Date.now() + 1).toString(),
-        text: "I'd be happy to help you find flights! Please tell me:\n\n• Where are you flying from?\n• Where do you want to go?\n• What date? (optional)\n\nFor example: 'I want to fly from New York to London' or 'Find flights from LAX to JFK'",
+        text: "I'd be happy to help you find and book flights! Please tell me:\n\n• Where are you flying from?\n• Where do you want to go?\n• What date? (optional)\n\nFor example:\n- 'Find flights from New York to London'\n- 'Book a flight from LAX to JFK'\n- 'Search flights from Surat to Dubai'",
         isBot: true,
         timestamp: new Date()
       };
@@ -194,7 +221,7 @@ const FlightBot = () => {
         <div className="bg-gradient-to-r from-blue-600 to-sky-500 text-white p-4 rounded-t-lg">
           <div className="flex items-center gap-2">
             <Plane className="h-6 w-6" />
-            <h2 className="font-semibold text-lg">Flight Search Assistant</h2>
+            <h2 className="font-semibold text-lg">Flight Booking Assistant</h2>
             <div className="ml-auto flex items-center gap-1">
               <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
               <span className="text-sm">Online</span>
@@ -211,7 +238,11 @@ const FlightBot = () => {
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                     message.isBot ? 'bg-blue-100' : 'bg-gray-100'
                   }`}>
-                    {message.isBot ? <Bot className="h-4 w-4 text-blue-600" /> : <User className="h-4 w-4 text-gray-600" />}
+                    {message.isBot ? 
+                      (message.selectedFlight ? <CreditCard className="h-4 w-4 text-blue-600" /> : 
+                       message.text.includes('Confirmed') ? <CheckCircle className="h-4 w-4 text-green-600" /> :
+                       <Bot className="h-4 w-4 text-blue-600" />) : 
+                      <User className="h-4 w-4 text-gray-600" />}
                   </div>
                   <div className={`rounded-2xl px-4 py-2 max-w-full ${
                     message.isBot 
@@ -229,7 +260,11 @@ const FlightBot = () => {
                 {message.flights && message.flights.length > 0 && (
                   <div className="mt-4 grid gap-3">
                     {message.flights.map((flight, index) => (
-                      <FlightCard key={`${message.id}-flight-${index}`} flight={flight} />
+                      <FlightCard 
+                        key={`${message.id}-flight-${index}`} 
+                        flight={flight} 
+                        onSelectFlight={handleFlightSelection}
+                      />
                     ))}
                   </div>
                 )}
@@ -263,7 +298,7 @@ const FlightBot = () => {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Type your message... (e.g., 'Find flights from LAX to JFK')"
+              placeholder="Type your message... (e.g., 'Find flights from LAX to JFK' or 'Book this flight')"
               className="flex-1 border-gray-200 focus:border-blue-400 focus:ring-blue-400"
               disabled={isLoading}
             />
@@ -276,7 +311,7 @@ const FlightBot = () => {
             </Button>
           </div>
           <p className="text-xs text-gray-500 mt-2">
-            Try: "Find flights from New York to London" or "Search LAX to JFK flights"
+            Try: "Find flights from New York to London" or "Book a flight from Surat to Dubai"
           </p>
         </div>
       </Card>

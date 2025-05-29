@@ -5,12 +5,16 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Plane, Clock, MapPin, DollarSign } from 'lucide-react';
 import { Flight } from '@/services/flightService';
+import { useToast } from '@/hooks/use-toast';
 
 interface FlightCardProps {
   flight: Flight;
+  onSelectFlight?: (flight: Flight, price: number) => void;
 }
 
-const FlightCard: React.FC<FlightCardProps> = ({ flight }) => {
+const FlightCard: React.FC<FlightCardProps> = ({ flight, onSelectFlight }) => {
+  const { toast } = useToast();
+
   const formatTime = (dateString: string) => {
     if (!dateString) return 'N/A';
     try {
@@ -26,6 +30,43 @@ const FlightCard: React.FC<FlightCardProps> = ({ flight }) => {
       return new Date(dateString).toLocaleDateString();
     } catch {
       return 'N/A';
+    }
+  };
+
+  // Calculate realistic pricing based on route and airline
+  const calculatePrice = () => {
+    const basePrice = 200;
+    const airlineMultiplier = getAirlineMultiplier(flight.airline?.name || '');
+    const routeMultiplier = getRouteMultiplier(flight.departure?.iata || '', flight.arrival?.iata || '');
+    return Math.floor((basePrice + Math.random() * 800) * airlineMultiplier * routeMultiplier);
+  };
+
+  const getAirlineMultiplier = (airlineName: string) => {
+    const premiumAirlines = ['Emirates', 'Singapore Airlines', 'Lufthansa', 'British Airways'];
+    const budgetAirlines = ['IndiGo', 'Air India Express', 'JetBlue'];
+    
+    if (premiumAirlines.some(airline => airlineName.includes(airline))) return 1.5;
+    if (budgetAirlines.some(airline => airlineName.includes(airline))) return 0.8;
+    return 1.0;
+  };
+
+  const getRouteMultiplier = (from: string, to: string) => {
+    const longHaulRoutes = ['JFK-LHR', 'LAX-NRT', 'SYD-LAX', 'DXB-JFK'];
+    const route = `${from}-${to}`;
+    if (longHaulRoutes.includes(route) || longHaulRoutes.includes(`${to}-${from}`)) return 1.8;
+    return 1.0;
+  };
+
+  const price = calculatePrice();
+
+  const handleSelectFlight = () => {
+    if (onSelectFlight) {
+      onSelectFlight(flight, price);
+    } else {
+      toast({
+        title: "Flight Selected!",
+        description: `You selected ${flight.airline?.name} flight ${flight.flight?.iata} for $${price}. Proceeding to booking...`,
+      });
     }
   };
 
@@ -98,12 +139,15 @@ const FlightCard: React.FC<FlightCardProps> = ({ flight }) => {
               <span className="text-sm text-gray-500">Price from</span>
             </div>
             <div className="text-2xl font-bold text-green-600">
-              ${Math.floor(Math.random() * 500) + 200}
+              ${price}
             </div>
             <div className="text-xs text-gray-500">per person</div>
           </div>
           
-          <Button className="w-full md:w-auto bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-700 hover:to-sky-600 transition-all duration-200">
+          <Button 
+            onClick={handleSelectFlight}
+            className="w-full md:w-auto bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-700 hover:to-sky-600 transition-all duration-200"
+          >
             Select Flight
           </Button>
         </div>
