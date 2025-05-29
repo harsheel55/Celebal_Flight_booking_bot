@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Welcome to your Lovable project
 
 ## Project info
@@ -150,3 +151,6 @@ Example:
 Then instruct the AI:
 
 Use this function whenever the user mentions flight search queries like "from X to Y".
+=======
+# Celebal_Flight_booking_bot
+>>>>>>> 595ad6af83ec5e5e677a9e03ec6ade2018cbb092
