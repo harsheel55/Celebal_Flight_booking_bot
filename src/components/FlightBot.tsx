@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -39,19 +38,77 @@ const FlightBot = () => {
   }, [messages]);
 
   const extractFlightDetails = (message: string) => {
-    // Simple pattern matching for flight search
-    const fromMatch = message.match(/from\s+([a-zA-Z\s]+?)(?:\s+to|\s+$)/i);
-    const toMatch = message.match(/to\s+([a-zA-Z\s]+?)(?:\s+on|\s+$)/i);
+    console.log('Original message:', message);
+    
+    // More flexible pattern matching for flight search
+    let from = '';
+    let to = '';
+    let date = '';
+
+    // Try multiple patterns for "from" location
+    const fromPatterns = [
+      /from\s+([a-zA-Z\s]{2,}?)(?:\s+to\s|\s+$)/i,
+      /leaving\s+([a-zA-Z\s]{2,}?)(?:\s+to\s|\s+going\s|\s+$)/i,
+      /departing\s+([a-zA-Z\s]{2,}?)(?:\s+to\s|\s+$)/i
+    ];
+
+    // Try multiple patterns for "to" location  
+    const toPatterns = [
+      /to\s+([a-zA-Z\s]{2,}?)(?:\s+on\s|\s+$)/i,
+      /going\s+to\s+([a-zA-Z\s]{2,}?)(?:\s+on\s|\s+$)/i,
+      /destination\s+([a-zA-Z\s]{2,}?)(?:\s+on\s|\s+$)/i
+    ];
+
+    // Extract from location
+    for (const pattern of fromPatterns) {
+      const match = message.match(pattern);
+      if (match && match[1]) {
+        from = match[1].trim();
+        break;
+      }
+    }
+
+    // Extract to location
+    for (const pattern of toPatterns) {
+      const match = message.match(pattern);
+      if (match && match[1]) {
+        to = match[1].trim();
+        break;
+      }
+    }
+
+    // If the above patterns didn't work, try a different approach
+    if (!from || !to) {
+      // Look for airport codes (3 letters)
+      const airportCodes = message.match(/\b[A-Z]{3}\b/g);
+      if (airportCodes && airportCodes.length >= 2) {
+        from = from || airportCodes[0];
+        to = to || airportCodes[1];
+      }
+      
+      // Try simpler patterns
+      if (!from || !to) {
+        const simpleFromMatch = message.match(/(?:from|leaving)\s+([a-zA-Z\s]+)/i);
+        const simpleToMatch = message.match(/(?:to|going)\s+([a-zA-Z\s]+)/i);
+        
+        if (simpleFromMatch) from = from || simpleFromMatch[1].trim();
+        if (simpleToMatch) to = to || simpleToMatch[1].trim();
+      }
+    }
+
+    // Clean up extracted locations (remove common words)
+    from = from.replace(/\b(flights?|flight|plane|airplane)\b/gi, '').trim();
+    to = to.replace(/\b(flights?|flight|plane|airplane)\b/gi, '').trim();
+
+    // Extract date
     const dateMatch = message.match(/on\s+([0-9-\/]+)/i) || message.match(/([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+    if (dateMatch) {
+      date = dateMatch[1];
+    }
     
-    // Also check for airport codes
-    const airportCodeMatch = message.match(/([A-Z]{3})/g);
-    
-    return {
-      from: fromMatch?.[1]?.trim() || (airportCodeMatch?.[0]) || '',
-      to: toMatch?.[1]?.trim() || (airportCodeMatch?.[1]) || '',
-      date: dateMatch?.[1] || ''
-    };
+    const result = { from, to, date };
+    console.log('Extracted flight details:', result);
+    return result;
   };
 
   const handleSendMessage = async () => {
@@ -71,10 +128,11 @@ const FlightBot = () => {
     // Extract flight details from message
     const flightDetails = extractFlightDetails(inputValue.toLowerCase());
     
-    console.log('Extracted flight details:', flightDetails);
+    console.log('Processing flight search with details:', flightDetails);
 
     if (flightDetails.from && flightDetails.to) {
       try {
+        console.log('Searching flights...');
         const flights = await searchFlights(flightDetails.from, flightDetails.to, flightDetails.date);
         
         const botResponse: Message = {
@@ -110,6 +168,7 @@ const FlightBot = () => {
         });
       }
     } else {
+      console.log('Missing flight details, showing help message');
       const botResponse: Message = {
         id: (Date.now() + 1).toString(),
         text: "I'd be happy to help you find flights! Please tell me:\n\n• Where are you flying from?\n• Where do you want to go?\n• What date? (optional)\n\nFor example: 'I want to fly from New York to London' or 'Find flights from LAX to JFK'",
