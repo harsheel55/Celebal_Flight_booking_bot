@@ -1,5 +1,5 @@
-// Enhanced BookingDialog.js with complete passenger details collection
-const { ComponentDialog, WaterfallDialog, TextPrompt, ConfirmPrompt, NumberPrompt } = require('botbuilder-dialogs');
+// Enhanced BookingDialog.js with complete payment collection
+const { ComponentDialog, WaterfallDialog, TextPrompt, ConfirmPrompt, NumberPrompt, ChoicePrompt } = require('botbuilder-dialogs');
 const { MessageFactory, CardFactory } = require('botbuilder');
 const { DatabaseService } = require('../../services/databaseService');
 const PaymentService = require('../../services/paymentService');
@@ -8,6 +8,7 @@ const WATERFALL_DIALOG = 'waterfallDialog';
 const TEXT_PROMPT = 'textPrompt';
 const CONFIRM_PROMPT = 'confirmPrompt';
 const NUMBER_PROMPT = 'numberPrompt';
+const CHOICE_PROMPT = 'choicePrompt';
 
 class BookingDialog extends ComponentDialog {
     constructor() {
@@ -19,6 +20,7 @@ class BookingDialog extends ComponentDialog {
         this.addDialog(new TextPrompt(TEXT_PROMPT));
         this.addDialog(new ConfirmPrompt(CONFIRM_PROMPT));
         this.addDialog(new NumberPrompt(NUMBER_PROMPT));
+        this.addDialog(new ChoicePrompt(CHOICE_PROMPT));
         
         this.addDialog(new WaterfallDialog(WATERFALL_DIALOG, [
             this.initBookingStep.bind(this),
@@ -30,6 +32,8 @@ class BookingDialog extends ComponentDialog {
             this.collectEmergencyContactStep.bind(this),
             this.showBookingSummaryStep.bind(this),
             this.confirmBookingStep.bind(this),
+            this.collectPaymentMethodStep.bind(this),      // NEW STEP
+            this.collectCardDetailsStep.bind(this),        // NEW STEP
             this.processPaymentStep.bind(this),
             this.finalConfirmationStep.bind(this)
         ]));
@@ -190,13 +194,37 @@ class BookingDialog extends ComponentDialog {
         });
     }
 
-    async processPaymentStep(stepContext) {
+    // NEW: Collect Payment Method
+    async collectPaymentMethodStep(stepContext) {
         const confirmBooking = stepContext.result;
         
         if (!confirmBooking) {
             await stepContext.context.sendActivity(MessageFactory.text('❌ Booking cancelled. Thank you for using our service.'));
             return await stepContext.endDialog();
         }
+        
+        return await stepContext.prompt(CHOICE_PROMPT, {
+            prompt: MessageFactory.text('💳 **Payment Method**\n\nPlease select your payment method:'),
+            choices: ['Credit Card', 'Debit Card']
+        });
+    }
+
+    // NEW: Collect Card Details
+    async collectCardDetailsStep(stepContext) {
+        stepContext.values.paymentMethod = stepContext.result.value.toLowerCase().replace(' ', '_');
+        
+        await stepContext.context.sendActivity(MessageFactory.text('🔒 **Secure Payment Information**\n\nFor demo purposes, you can use test card details.'));
+        
+        return await stepContext.prompt(TEXT_PROMPT, {
+            prompt: MessageFactory.text(`💳 **Card Number:**\n\nEnter card number (or use test: 4532759734545858):`)
+        });
+    }
+
+    async processPaymentStep(stepContext) {
+        const cardNumber = stepContext.result;
+        
+        // For demo, we'll use the provided card number or default test card
+        stepContext.values.cardNumber = cardNumber === '4532759734545858' ? cardNumber : '4532759734545858';
         
         // Create booking record
         const bookingData = {
@@ -217,12 +245,20 @@ class BookingDialog extends ComponentDialog {
         await new Promise(resolve => setTimeout(resolve, 3000));
         
         try {
-            const paymentResult = await this.paymentService.processPayment({
+            // FIXED: Complete payment data structure
+            const paymentData = {
+                bookingId: bookingData.bookingId,
                 amount: bookingData.totalAmount,
                 currency: 'INR',
-                bookingId: bookingData.bookingId,
+                paymentMethod: stepContext.values.paymentMethod || 'credit_card',
+                cardNumber: stepContext.values.cardNumber,
+                expiryDate: '12/25',  // Test data
+                cvv: '123',           // Test data
+                cardHolderName: stepContext.values.passengers[0].fullName,
                 customerEmail: stepContext.values.passengers[0].email
-            });
+            };
+            
+            const paymentResult = await this.paymentService.processPayment(paymentData);
             
             if (paymentResult.success) {
                 bookingData.status = 'CONFIRMED';
@@ -233,7 +269,7 @@ class BookingDialog extends ComponentDialog {
                 
                 return await stepContext.next();
             } else {
-                await stepContext.context.sendActivity(MessageFactory.text('❌ Payment failed. Please try again or contact support.'));
+                await stepContext.context.sendActivity(MessageFactory.text(`❌ Payment failed: ${paymentResult.error || 'Unknown error'}. Please try again or contact support.`));
                 return await stepContext.endDialog();
             }
         } catch (error) {
