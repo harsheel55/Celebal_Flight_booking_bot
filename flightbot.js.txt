@@ -1,0 +1,1825 @@
+flightbot.js
+// Enhanced flightBot.js with complete booking integration
+const { ActivityHandler, MessageFactory, CardFactory } = require('botbuilder');
+const { MainDialog } = require('./dialogs/mainDialog');
+const { BookingDialog } = require('./dialogs/bookingDialog');
+const { ConversationState, UserState, MemoryStorage } = require('botbuilder');
+const { DialogSet, DialogTurnStatus } = require('botbuilder-dialogs');
+const { FlightService } = require('../services/flightService');
+
+class FlightBot extends ActivityHandler {
+    constructor() {
+        super();
+        
+        // Create conversation and user state
+        const memoryStorage = new MemoryStorage();
+        this.conversationState = new ConversationState(memoryStorage);
+        this.userState = new UserState(memoryStorage);
+        this.dialogState = this.conversationState.createProperty('DialogState');
+        
+        // Initialize services
+        this.flightService = new FlightService();
+        
+        // Create dialogs
+        this.mainDialog = new MainDialog(this.flightService);
+        this.bookingDialog = new BookingDialog();
+        
+        this.dialogSet = new DialogSet(this.dialogState);
+        this.dialogSet.add(this.mainDialog);
+        this.dialogSet.add(this.bookingDialog);
+        
+        // Store flight search results for booking
+        this.searchResults = {};
+        
+        this.onMessage(async (context, next) => {
+            console.log('Running dialog with Message Activity.');
+            console.log('Message text:', context.activity.text);
+            
+            try {
+                // Handle card actions (flight selection)
+                if (context.activity.value && context.activity.value.action === 'selectFlight') {
+                    await this.handleFlightSelection(context, context.activity.value);
+                    return;
+                }
+                
+                // Handle booking confirmation
+                if (context.activity.value && context.activity.value.action === 'confirmBooking') {
+                    await this.handleBookingConfirmation(context, context.activity.value);
+                    return;
+                }
+                
+                const dialogContext = await this.dialogSet.createContext(context);
+                const results = await dialogContext.continueDialog();
+                
+                if (results.status === DialogTurnStatus.empty) {
+                    await dialogContext.beginDialog('MainDialog');
+                }
+                
+                // Handle completed search results
+                if (results.status === DialogTurnStatus.complete && results.result) {
+                    await this.handleSearchResults(context, results.result);
+                }
+                
+            } catch (error) {
+                console.error('Error in onMessage:', error);
+                await context.sendActivity(MessageFactory.text('Sorry, something went wrong. Please try again.'));
+            }
+            
+            await next();
+        });
+        
+        this.onMembersAdded(async (context, next) => {
+            const welcomeText = '✈️ Welcome to Flight Booking Bot! I can help you search and book flights.\n\n' +
+                              'Simply type "search flights" or "book flight" to get started.\n\n' +
+                              'Available commands:\n' +
+                              '• Search flights\n' +
+                              '• Check flight status\n' +
+                              '• View bookings\n' +
+                              '• Cancel booking';
+            
+            const membersAdded = context.activity.membersAdded;
+            
+            for (let cnt = 0; cnt < membersAdded.length; ++cnt) {
+                if (membersAdded[cnt].id !== context.activity.recipient.id) {
+                    await context.sendActivity(MessageFactory.text(welcomeText));
+                }
+            }
+            await next();
+        });
+    }
+    
+    async handleSearchResults(context, searchResult) {
+        try {
+            console.log('Handling search results:', searchResult);
+            
+            if (searchResult.flights && searchResult.flights.length > 0) {
+                // Store results for booking
+                const userId = context.activity.from.id;
+                this.searchResults[userId] = {
+                    flights: searchResult.flights,
+                    searchParams: searchResult.searchParams,
+                    timestamp: new Date()
+                };
+                
+                // Send flight cards
+                const flightCards = this.createFlightCards(searchResult.flights);
+                if (flightCards && flightCards.length > 0) {
+                    const cardActivity = MessageFactory.carousel(flightCards);
+                    cardActivity.text = `✈️ Found ${searchResult.flights.length} flights for your search:`;
+                    await context.sendActivity(cardActivity);
+                } else {
+                    // Fallback to text if cards fail
+                    const textResponse = this.formatFlightResponse(searchResult.flights);
+                    await context.sendActivity(MessageFactory.text(textResponse));
+                }
+                
+                await context.sendActivity(MessageFactory.text('Select a flight to proceed with booking! 👆'));
+            } else {
+                await context.sendActivity(MessageFactory.text('No flights found for your search criteria. Please try different dates or destinations.'));
+            }
+        } catch (error) {
+            console.error('Error handling search results:', error);
+            await context.sendActivity(MessageFactory.text('Sorry, there was an error displaying the search results.'));
+        }
+    }
+    
+    async handleFlightSelection(context, actionData) {
+        try {
+            console.log('Flight selected:', actionData);
+            
+            const userId = context.activity.from.id;
+            const userSearchResults = this.searchResults[userId];
+            
+            if (!userSearchResults) {
+                await context.sendActivity(MessageFactory.text('Sorry, your search results have expired. Please search again.'));
+                return;
+            }
+            
+            // Find the selected flight
+            const selectedFlight = userSearchResults.flights.find(f => f.id === actionData.flightId);
+            
+            if (!selectedFlight) {
+                await context.sendActivity(MessageFactory.text('Sorry, the selected flight is no longer available.'));
+                return;
+            }
+            
+            // Create booking confirmation card
+            const confirmationCard = this.createBookingConfirmationCard(selectedFlight);
+            await context.sendActivity(MessageFactory.attachment(confirmationCard));
+            
+        } catch (error) {
+            console.error('Error handling flight selection:', error);
+            await context.sendActivity(MessageFactory.text('Sorry, there was an error processing your selection.'));
+        }
+    }
+    
+    async handleBookingConfirmation(context, actionData) {
+        try {
+            console.log('Booking confirmation:', actionData);
+            
+            if (actionData.confirm === 'yes') {
+                // Start the booking dialog
+                const dialogContext = await this.dialogSet.createContext(context);
+                
+                const userId = context.activity.from.id;
+                const userSearchResults = this.searchResults[userId];
+                const selectedFlight = userSearchResults.flights.find(f => f.id === actionData.flightId);
+                
+                await dialogContext.beginDialog('BookingDialog', { 
+                    flightData: selectedFlight,
+                    searchParams: userSearchResults.searchParams 
+                });
+            } else {
+                await context.sendActivity(MessageFactory.text('Booking cancelled. Feel free to select another flight or search again.'));
+            }
+            
+        } catch (error) {
+            console.error('Error handling booking confirmation:', error);
+            await context.sendActivity(MessageFactory.text('Sorry, there was an error processing your booking confirmation.'));
+        }
+    }
+    
+    createFlightCards(flights) {
+        const cards = [];
+        
+        flights.forEach((flight, index) => {
+            const card = CardFactory.adaptiveCard({
+                type: "AdaptiveCard",
+                version: "1.2",
+                body: [
+                    {
+                        type: "Container",
+                        style: "emphasis",
+                        items: [
+                            {
+                                type: "ColumnSet",
+                                columns: [
+                                    {
+                                        type: "Column",
+                                        width: "stretch",
+                                        items: [
+                                            {
+                                                type: "TextBlock",
+                                                text: `${flight.airline} ${flight.flightNumber}`,
+                                                weight: "Bolder",
+                                                size: "Medium",
+                                                color: "Accent"
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        type: "Column",
+                                        width: "auto",
+                                        items: [
+                                            {
+                                                type: "TextBlock",
+                                                text: flight.price,
+                                                weight: "Bolder",
+                                                size: "Large",
+                                                color: "Attention"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        type: "Container",
+                        spacing: "Medium",
+                        items: [
+                            {
+                                type: "ColumnSet",
+                                columns: [
+                                    {
+                                        type: "Column",
+                                        width: "stretch",
+                                        items: [
+                                            {
+                                                type: "TextBlock",
+                                                text: "🛫 Departure",
+                                                weight: "Bolder",
+                                                size: "Small"
+                                            },
+                                            {
+                                                type: "TextBlock",
+                                                text: `${flight.departure.time}`,
+                                                weight: "Bolder",
+                                                spacing: "None"
+                                            },
+                                            {
+                                                type: "TextBlock",
+                                                text: `${flight.departure.airport}`,
+                                                size: "Small",
+                                                spacing: "None"
+                                            },
+                                            {
+                                                type: "TextBlock",
+                                                text: flight.departure.date,
+                                                size: "Small",
+                                                color: "Accent",
+                                                spacing: "None"
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        type: "Column",
+                                        width: "auto",
+                                        verticalContentAlignment: "Center",
+                                        items: [
+                                            {
+                                                type: "TextBlock",
+                                                text: "✈️",
+                                                size: "Large",
+                                                horizontalAlignment: "Center"
+                                            },
+                                            {
+                                                type: "TextBlock",
+                                                text: flight.duration,
+                                                size: "Small",
+                                                horizontalAlignment: "Center",
+                                                spacing: "None"
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        type: "Column",
+                                        width: "stretch",
+                                        items: [
+                                            {
+                                                type: "TextBlock",
+                                                text: "🛬 Arrival",
+                                                weight: "Bolder",
+                                                size: "Small"
+                                            },
+                                            {
+                                                type: "TextBlock",
+                                                text: `${flight.arrival.time}`,
+                                                weight: "Bolder",
+                                                spacing: "None"
+                                            },
+                                            {
+                                                type: "TextBlock",
+                                                text: `${flight.arrival.airport}`,
+                                                size: "Small",
+                                                spacing: "None"
+                                            },
+                                            {
+                                                type: "TextBlock",
+                                                text: flight.arrival.date,
+                                                size: "Small",
+                                                color: "Accent",
+                                                spacing: "None"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                actions: [
+                    {
+                        type: "Action.Submit",
+                        title: "🎯 Select this flight",
+                        style: "positive",
+                        data: {
+                            action: "selectFlight",
+                            flightId: flight.id,
+                            flightNumber: flight.flightNumber
+                        }
+                    }
+                ]
+            });
+            
+            cards.push(card);
+        });
+        
+        return cards;
+    }
+    
+    createBookingConfirmationCard(flight) {
+        return CardFactory.adaptiveCard({
+            type: "AdaptiveCard",
+            version: "1.2",
+            body: [
+                {
+                    type: "Container",
+                    style: "good",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "✈️ Confirm Your Flight Selection",
+                            weight: "Bolder",
+                            size: "Large",
+                            horizontalAlignment: "Center",
+                            color: "Light"
+                        }
+                    ]
+                },
+                {
+                    type: "Container",
+                    spacing: "Medium",
+                    items: [
+                        {
+                            type: "FactSet",
+                            facts: [
+                                { title: "Flight:", value: `${flight.airline} ${flight.flightNumber}` },
+                                { title: "Route:", value: `${flight.departure.airport} → ${flight.arrival.airport}` },
+                                { title: "Departure:", value: `${flight.departure.time} on ${flight.departure.date}` },
+                                { title: "Arrival:", value: `${flight.arrival.time} on ${flight.arrival.date}` },
+                                { title: "Duration:", value: flight.duration },
+                                { title: "Total Price:", value: flight.price }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    type: "Container",
+                    spacing: "Medium",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "Proceed with booking? You'll need to provide passenger details and payment information.",
+                            wrap: true,
+                            size: "Small",
+                            color: "Accent"
+                        }
+                    ]
+                }
+            ],
+            actions: [
+                {
+                    type: "Action.Submit",
+                    title: "✅ Yes, Book This Flight",
+                    style: "positive",
+                    data: {
+                        action: "confirmBooking",
+                        flightId: flight.id,
+                        confirm: "yes"
+                    }
+                },
+                {
+                    type: "Action.Submit",
+                    title: "❌ Cancel",
+                    data: {
+                        action: "confirmBooking",
+                        flightId: flight.id,
+                        confirm: "no"
+                    }
+                }
+            ]
+        });
+    }
+    
+    formatFlightResponse(flights) {
+        if (!flights || flights.length === 0) {
+            return "No flights found for your search.";
+        }
+        
+        let response = `✈️ **Found ${flights.length} available flights:**\n\n`;
+        
+        flights.forEach((flight, index) => {
+            response += `**${index + 1}. ${flight.airline} ${flight.flightNumber}**\n`;
+            response += `🛫 **Departure:** ${flight.departure.time} from ${flight.departure.airport} (${flight.departure.date})\n`;
+            response += `🛬 **Arrival:** ${flight.arrival.time} at ${flight.arrival.airport} (${flight.arrival.date})\n`;
+            response += `⏱️ **Duration:** ${flight.duration}\n`;
+            response += `💰 **Price:** ${flight.price}\n`;
+            response += `---\n\n`;
+        });
+        
+        response += "Reply with the flight number (e.g., 'AI101') to book that flight!";
+        
+        return response;
+    }
+    
+    async run(context) {
+        await super.run(context);
+        
+        // Save any state changes that might have occurred during the turn
+        await this.conversationState.saveChanges(context, false);
+        await this.userState.saveChanges(context, false);
+    }
+}
+
+module.exports = { FlightBot };
+
+
+maindialg.js:
+// Enhanced MainDialog.js with improved flow
+const { ComponentDialog, WaterfallDialog, TextPrompt, ChoicePrompt, NumberPrompt, ConfirmPrompt } = require('botbuilder-dialogs');
+const { MessageFactory } = require('botbuilder');
+
+const WATERFALL_DIALOG = 'waterfallDialog';
+const TEXT_PROMPT = 'textPrompt';
+const CHOICE_PROMPT = 'choicePrompt';
+const NUMBER_PROMPT = 'numberPrompt';
+const CONFIRM_PROMPT = 'confirmPrompt';
+
+class MainDialog extends ComponentDialog {
+    constructor(flightService) {
+        super('MainDialog');
+        
+        this.flightService = flightService;
+        
+        this.addDialog(new TextPrompt(TEXT_PROMPT));
+        this.addDialog(new ChoicePrompt(CHOICE_PROMPT));
+        this.addDialog(new NumberPrompt(NUMBER_PROMPT));
+        this.addDialog(new ConfirmPrompt(CONFIRM_PROMPT));
+        
+        this.addDialog(new WaterfallDialog(WATERFALL_DIALOG, [
+            this.initialStep.bind(this),
+            this.actionStep.bind(this),
+            this.originStep.bind(this),
+            this.destinationStep.bind(this),
+            this.departureDateStep.bind(this),
+            this.returnDateStep.bind(this),
+            this.passengersStep.bind(this),
+            this.searchFlightsStep.bind(this),
+            this.finalStep.bind(this)
+        ]));
+        
+        this.initialDialogId = WATERFALL_DIALOG;
+    }
+    
+    async initialStep(stepContext) {
+        const messageText = stepContext.options.restartMsg || '✈️ Welcome to Flight Booking Bot! How can I help you today?';
+        
+        const promptOptions = {
+            prompt: MessageFactory.text(messageText),
+            choices: [
+                'Search Flights',
+                'Check Flight Status', 
+                'View My Bookings',
+                'Cancel Booking'
+            ]
+        };
+        
+        return await stepContext.prompt(CHOICE_PROMPT, promptOptions);
+    }
+    
+    async actionStep(stepContext) {
+        const action = stepContext.result.value;
+        stepContext.values.action = action;
+        
+        switch (action) {
+            case 'Search Flights':
+                return await stepContext.prompt(TEXT_PROMPT, {
+                    prompt: MessageFactory.text('Great! Let\'s find you some flights. 🛫\n\nPlease enter your departure city (e.g., Mumbai, Delhi, Bangalore):')
+                });
+                
+            case 'Check Flight Status':
+                return await stepContext.prompt(TEXT_PROMPT, {
+                    prompt: MessageFactory.text('Please enter your flight number (e.g., AI101, 6E234):')
+                });
+                
+            case 'View My Bookings':
+                await stepContext.context.sendActivity('📋 Here are your recent bookings:\n\n*This feature is coming soon!*');
+                return await stepContext.endDialog();
+                
+            case 'Cancel Booking':
+                await stepContext.context.sendActivity('❌ Booking cancellation:\n\n*This feature is coming soon!*');
+                return await stepContext.endDialog();
+                
+            default:
+                await stepContext.context.sendActivity('I didn\'t understand that option. Please try again.');
+                return await stepContext.replaceDialog(this.id);
+        }
+    }
+    
+    async originStep(stepContext) {
+        const action = stepContext.values.action;
+        
+        if (action === 'Check Flight Status') {
+            const flightNumber = stepContext.result;
+            await this.handleFlightStatus(stepContext, flightNumber);
+            return await stepContext.endDialog();
+        }
+        
+        // Continue with flight search
+        stepContext.values.origin = stepContext.result;
+        return await stepContext.prompt(TEXT_PROMPT, {
+            prompt: MessageFactory.text('Where would you like to go? (destination city):')
+        });
+    }
+    
+    async destinationStep(stepContext) {
+        stepContext.values.destination = stepContext.result;
+        return await stepContext.prompt(TEXT_PROMPT, {
+            prompt: MessageFactory.text('When would you like to travel? (YYYY-MM-DD format, e.g., 2025-07-15):')
+        });
+    }
+    
+    async departureDateStep(stepContext) {
+        const dateInput = stepContext.result;
+        
+        // Basic date validation
+        if (!this.isValidDate(dateInput)) {
+            await stepContext.context.sendActivity('Please enter a valid date in YYYY-MM-DD format (e.g., 2025-07-15).');
+            return await stepContext.replaceDialog(this.id, { restartMsg: 'Let\'s try again.' });
+        }
+        
+        stepContext.values.departureDate = dateInput;
+        
+        return await stepContext.prompt(CONFIRM_PROMPT, {
+            prompt: MessageFactory.text('Is this a round trip? (Yes for round trip, No for one way)')
+        });
+    }
+    
+    async returnDateStep(stepContext) {
+        const isRoundTrip = stepContext.result;
+        stepContext.values.isRoundTrip = isRoundTrip;
+        
+        if (isRoundTrip) {
+            return await stepContext.prompt(TEXT_PROMPT, {
+                prompt: MessageFactory.text('When would you like to return? (YYYY-MM-DD format):')
+            });
+        } else {
+            stepContext.values.returnDate = null;
+            return await stepContext.next();
+        }
+    }
+    
+    async passengersStep(stepContext) {
+        if (stepContext.values.isRoundTrip && stepContext.result) {
+            const returnDateInput = stepContext.result;
+            
+            if (!this.isValidDate(returnDateInput)) {
+                await stepContext.context.sendActivity('Please enter a valid return date in YYYY-MM-DD format.');
+                return await stepContext.replaceDialog(this.id, { restartMsg: 'Let\'s try again.' });
+            }
+            
+            stepContext.values.returnDate = returnDateInput;
+        }
+        
+        return await stepContext.prompt(NUMBER_PROMPT, {
+            prompt: MessageFactory.text('How many passengers? (1-9):'),
+            validations: {
+                required: true,
+                min: 1,
+                max: 9
+            }
+        });
+    }
+    
+    async searchFlightsStep(stepContext) {
+        stepContext.values.passengers = stepContext.result || 1;
+        
+        // Show search summary
+        const summary = this.createSearchSummary(stepContext.values);
+        await stepContext.context.sendActivity(MessageFactory.text(summary));
+        await stepContext.context.sendActivity(MessageFactory.text('🔍 Searching for flights...'));
+        
+        // Simulate search delay
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        try {
+            const searchResult = await this.flightService.searchFlights(
+                stepContext.values.origin,
+                stepContext.values.destination,
+                stepContext.values.departureDate,
+                stepContext.values.returnDate,
+                stepContext.values.passengers
+            );
+            
+            console.log('MainDialog: Search completed, result:', searchResult);
+            
+            if (searchResult && searchResult.flights && searchResult.flights.length > 0) {
+                await stepContext.context.sendActivity(MessageFactory.text(`✅ Found ${searchResult.flights.length} flights for your search!`));
+                
+                // Add search parameters to the result for booking purposes
+                searchResult.searchParams = {
+                    origin: stepContext.values.origin,
+                    destination: stepContext.values.destination,
+                    departureDate: stepContext.values.departureDate,
+                    returnDate: stepContext.values.returnDate,
+                    passengers: stepContext.values.passengers
+                };
+                
+                return await stepContext.endDialog(searchResult);
+            } else {
+                await stepContext.context.sendActivity(MessageFactory.text('❌ No flights found for your search criteria. Please try different dates or destinations.'));
+                return await stepContext.endDialog();
+            }
+            
+        } catch (error) {
+            console.error('MainDialog: Search error:', error);
+            await stepContext.context.sendActivity(MessageFactory.text('❌ Sorry, there was an error searching for flights. Please try again.'));
+            return await stepContext.endDialog();
+        }
+    }
+    
+    async finalStep(stepContext) {
+        return await stepContext.endDialog();
+    }
+    
+    async handleFlightStatus(stepContext, flightNumber) {
+        try {
+            await stepContext.context.sendActivity(MessageFactory.text('🔍 Checking flight status...'));
+            
+            const status = await this.flightService.getFlightStatus(flightNumber);
+            
+            if (status) {
+                const statusMessage = this.formatFlightStatus(status);
+                await stepContext.context.sendActivity(MessageFactory.text(statusMessage));
+            } else {
+                await stepContext.context.sendActivity(MessageFactory.text('❌ Flight not found. Please check the flight number and try again.'));
+            }
+        } catch (error) {
+            console.error('Error getting flight status:', error);
+            await stepContext.context.sendActivity(MessageFactory.text('❌ Sorry, I couldn\'t retrieve the flight status. Please try again later.'));
+        }
+    }
+    
+    createSearchSummary(values) {
+        let summary = `📋 **Search Summary:**\n`;
+        summary += `🛫 **From:** ${values.origin}\n`;
+        summary += `🛬 **To:** ${values.destination}\n`;
+        summary += `📅 **Departure:** ${values.departureDate}\n`;
+        
+        if (values.returnDate) {
+            summary += `📅 **Return:** ${values.returnDate}\n`;
+        }
+        
+        summary += `👥 **Passengers:** ${values.passengers}\n`;
+        summary += `🎫 **Trip Type:** ${values.isRoundTrip ? 'Round Trip' : 'One Way'}\n`;
+        
+        return summary;
+    }
+    
+    formatFlightStatus(status) {
+        let message = `✈️ **Flight Status: ${status.flightNumber}**\n\n`;
+        message += `📊 **Status:** ${status.status.toUpperCase()}\n\n`;
+        
+        message += `🛫 **Departure:**\n`;
+        message += `📍 ${status.departure.airport}\n`;
+        message += `⏰ Scheduled: ${new Date(status.departure.scheduled).toLocaleString('en-IN')}\n`;
+        message += `⏰ Estimated: ${new Date(status.departure.estimated).toLocaleString('en-IN')}\n\n`;
+        
+        message += `🛬 **Arrival:**\n`;
+        message += `📍 ${status.arrival.airport}\n`;
+        message += `⏰ Scheduled: ${new Date(status.arrival.scheduled).toLocaleString('en-IN')}\n`;
+        message += `⏰ Estimated: ${new Date(status.arrival.estimated).toLocaleString('en-IN')}\n`;
+        
+        return message;
+    }
+    
+    isValidDate(dateString) {
+        // Basic date validation for YYYY-MM-DD format
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(dateString)) {
+            return false;
+        }
+        
+        const date = new Date(dateString);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        return date instanceof Date && !isNaN(date) && date >= today;
+    }
+}
+
+module.exports = { MainDialog };
+
+bookingdialog.js:
+// Enhanced BookingDialog.js with complete passenger details collection
+const { ComponentDialog, WaterfallDialog, TextPrompt, ConfirmPrompt, NumberPrompt } = require('botbuilder-dialogs');
+const { MessageFactory, CardFactory } = require('botbuilder');
+const { DatabaseService } = require('../../services/databaseService');
+const PaymentService = require('../../services/paymentService');
+
+const WATERFALL_DIALOG = 'waterfallDialog';
+const TEXT_PROMPT = 'textPrompt';
+const CONFIRM_PROMPT = 'confirmPrompt';
+const NUMBER_PROMPT = 'numberPrompt';
+
+class BookingDialog extends ComponentDialog {
+    constructor() {
+        super('BookingDialog');
+
+        this.databaseService = new DatabaseService();
+        this.paymentService = new PaymentService();
+
+        this.addDialog(new TextPrompt(TEXT_PROMPT));
+        this.addDialog(new ConfirmPrompt(CONFIRM_PROMPT));
+        this.addDialog(new NumberPrompt(NUMBER_PROMPT));
+        
+        this.addDialog(new WaterfallDialog(WATERFALL_DIALOG, [
+            this.initBookingStep.bind(this),
+            this.collectPassengerNameStep.bind(this),
+            this.collectEmailStep.bind(this),
+            this.collectPhoneStep.bind(this),
+            this.collectPassportStep.bind(this),
+            this.collectAddressStep.bind(this),
+            this.collectEmergencyContactStep.bind(this),
+            this.showBookingSummaryStep.bind(this),
+            this.confirmBookingStep.bind(this),
+            this.processPaymentStep.bind(this),
+            this.finalConfirmationStep.bind(this)
+        ]));
+
+        this.initialDialogId = WATERFALL_DIALOG;
+    }
+
+    async initBookingStep(stepContext) {
+        // Check if flight data is available
+        const flightData = stepContext.options.flightData;
+        const searchParams = stepContext.options.searchParams;
+        
+        if (!flightData) {
+            await stepContext.context.sendActivity(MessageFactory.text('❌ No flight selected. Please search and select a flight first.'));
+            return await stepContext.endDialog();
+        }
+        
+        // Store flight and search data
+        stepContext.values.flightData = flightData;
+        stepContext.values.searchParams = searchParams;
+        stepContext.values.passengers = [];
+        stepContext.values.currentPassengerIndex = 0;
+        
+        await stepContext.context.sendActivity(MessageFactory.text('✈️ **Starting Booking Process**\n\nI\'ll need to collect passenger details for your booking. Let\'s start with the first passenger.'));
+        
+        return await stepContext.next();
+    }
+
+    async collectPassengerNameStep(stepContext) {
+        const currentIndex = stepContext.values.currentPassengerIndex;
+        const totalPassengers = stepContext.values.searchParams.passengers;
+        
+        if (currentIndex < totalPassengers) {
+            return await stepContext.prompt(TEXT_PROMPT, {
+                prompt: MessageFactory.text(`👤 **Passenger ${currentIndex + 1} of ${totalPassengers}**\n\nPlease enter the full name (as per ID/Passport):`)
+            });
+        } else {
+            // All passengers collected, move to next step
+            return await stepContext.next();
+        }
+    }
+
+    async collectEmailStep(stepContext) {
+        const currentIndex = stepContext.values.currentPassengerIndex;
+        const totalPassengers = stepContext.values.searchParams.passengers;
+        
+        if (currentIndex < totalPassengers) {
+            // Initialize passenger object if not exists
+            if (!stepContext.values.passengers[currentIndex]) {
+                stepContext.values.passengers[currentIndex] = {};
+            }
+            
+            stepContext.values.passengers[currentIndex].fullName = stepContext.result;
+            
+            return await stepContext.prompt(TEXT_PROMPT, {
+                prompt: MessageFactory.text(`📧 **Email for ${stepContext.values.passengers[currentIndex].fullName}:**\n\nPlease enter a valid email address:`)
+            });
+        } else {
+            return await stepContext.next();
+        }
+    }
+
+    async collectPhoneStep(stepContext) {
+        const currentIndex = stepContext.values.currentPassengerIndex;
+        const totalPassengers = stepContext.values.searchParams.passengers;
+        
+        if (currentIndex < totalPassengers) {
+            const email = stepContext.result;
+            
+            // Basic email validation
+            if (!this.isValidEmail(email)) {
+                await stepContext.context.sendActivity(MessageFactory.text('❌ Please enter a valid email address.'));
+                return await stepContext.replaceDialog(this.id, stepContext.options);
+            }
+            
+            stepContext.values.passengers[currentIndex].email = email;
+            
+            return await stepContext.prompt(TEXT_PROMPT, {
+                prompt: MessageFactory.text(`📱 **Phone number for ${stepContext.values.passengers[currentIndex].fullName}:**\n\nPlease enter phone number with country code (e.g., +91 9876543210):`)
+            });
+        } else {
+            return await stepContext.next();
+        }
+    }
+
+    async collectPassportStep(stepContext) {
+        const currentIndex = stepContext.values.currentPassengerIndex;
+        const totalPassengers = stepContext.values.searchParams.passengers;
+        
+        if (currentIndex < totalPassengers) {
+            stepContext.values.passengers[currentIndex].phone = stepContext.result;
+            
+            return await stepContext.prompt(TEXT_PROMPT, {
+                prompt: MessageFactory.text(`🛂 **ID/Passport for ${stepContext.values.passengers[currentIndex].fullName}:**\n\nPlease enter ID/Passport number:`)
+            });
+        } else {
+            return await stepContext.next();
+        }
+    }
+
+    async collectAddressStep(stepContext) {
+        const currentIndex = stepContext.values.currentPassengerIndex;
+        const totalPassengers = stepContext.values.searchParams.passengers;
+        
+        if (currentIndex < totalPassengers) {
+            stepContext.values.passengers[currentIndex].passport = stepContext.result;
+            
+            return await stepContext.prompt(TEXT_PROMPT, {
+                prompt: MessageFactory.text(`🏠 **Address for ${stepContext.values.passengers[currentIndex].fullName}:**\n\nPlease enter complete address:`)
+            });
+        } else {
+            return await stepContext.next();
+        }
+    }
+
+    async collectEmergencyContactStep(stepContext) {
+        const currentIndex = stepContext.values.currentPassengerIndex;
+        const totalPassengers = stepContext.values.searchParams.passengers;
+        
+        if (currentIndex < totalPassengers) {
+            stepContext.values.passengers[currentIndex].address = stepContext.result;
+            
+            return await stepContext.prompt(TEXT_PROMPT, {
+                prompt: MessageFactory.text(`🚨 **Emergency contact for ${stepContext.values.passengers[currentIndex].fullName}:**\n\nPlease enter emergency contact name and phone number:`)
+            });
+        } else {
+            return await stepContext.next();
+        }
+    }
+
+    async showBookingSummaryStep(stepContext) {
+        const currentIndex = stepContext.values.currentPassengerIndex;
+        const totalPassengers = stepContext.values.searchParams.passengers;
+        
+        if (currentIndex < totalPassengers) {
+            stepContext.values.passengers[currentIndex].emergencyContact = stepContext.result;
+            
+            // Move to next passenger
+            stepContext.values.currentPassengerIndex++;
+            
+            // If more passengers, continue collecting details
+            if (stepContext.values.currentPassengerIndex < totalPassengers) {
+                await stepContext.context.sendActivity(MessageFactory.text(`✅ Details collected for ${stepContext.values.passengers[currentIndex].fullName}\n\nNow let's collect details for the next passenger.`));
+                return await stepContext.replaceDialog(this.id, stepContext.options);
+            }
+        }
+        
+        // All passenger details collected, show summary
+        const summaryCard = this.createBookingSummaryCard(stepContext.values);
+        await stepContext.context.sendActivity(MessageFactory.attachment(summaryCard));
+        
+        return await stepContext.next();
+    }
+
+    async confirmBookingStep(stepContext) {
+        return await stepContext.prompt(CONFIRM_PROMPT, {
+            prompt: MessageFactory.text('✅ Please review the booking details above. Do you want to proceed with the booking?')
+        });
+    }
+
+    async processPaymentStep(stepContext) {
+        const confirmBooking = stepContext.result;
+        
+        if (!confirmBooking) {
+            await stepContext.context.sendActivity(MessageFactory.text('❌ Booking cancelled. Thank you for using our service.'));
+            return await stepContext.endDialog();
+        }
+        
+        // Create booking record
+        const bookingData = {
+            bookingId: this.generateBookingId(),
+            flight: stepContext.values.flightData,
+            passengers: stepContext.values.passengers,
+            searchParams: stepContext.values.searchParams,
+            bookingDate: new Date(),
+            status: 'PENDING_PAYMENT',
+            totalAmount: this.calculateTotalAmount(stepContext.values.flightData, stepContext.values.passengers.length)
+        };
+        
+        stepContext.values.bookingData = bookingData;
+        
+        await stepContext.context.sendActivity(MessageFactory.text('💳 **Processing Payment**\n\nInitiating secure payment process...'));
+        
+        // Simulate payment processing
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        try {
+            const paymentResult = await this.paymentService.processPayment({
+                amount: bookingData.totalAmount,
+                currency: 'INR',
+                bookingId: bookingData.bookingId,
+                customerEmail: stepContext.values.passengers[0].email
+            });
+            
+            if (paymentResult.success) {
+                bookingData.status = 'CONFIRMED';
+                bookingData.paymentId = paymentResult.paymentId;
+                
+                // Save booking to database
+                await this.databaseService.saveBooking(bookingData);
+                
+                return await stepContext.next();
+            } else {
+                await stepContext.context.sendActivity(MessageFactory.text('❌ Payment failed. Please try again or contact support.'));
+                return await stepContext.endDialog();
+            }
+        } catch (error) {
+            console.error('Payment processing error:', error);
+            await stepContext.context.sendActivity(MessageFactory.text('❌ Payment processing failed. Please try again later.'));
+            return await stepContext.endDialog();
+        }
+    }
+
+    async finalConfirmationStep(stepContext) {
+        const bookingData = stepContext.values.bookingData;
+        
+        // Send confirmation card
+        const confirmationCard = this.createConfirmationCard(bookingData);
+        await stepContext.context.sendActivity(MessageFactory.attachment(confirmationCard));
+        
+        // Send confirmation email (simulated)
+        await stepContext.context.sendActivity(MessageFactory.text('📧 A confirmation email has been sent to your registered email address.'));
+        
+        await stepContext.context.sendActivity(MessageFactory.text('🎉 **Booking Completed Successfully!**\n\nThank you for choosing our service. Have a great trip! ✈️'));
+        
+        return await stepContext.endDialog();
+    }
+
+    createBookingSummaryCard(values) {
+        const flight = values.flightData;
+        const passengers = values.passengers;
+        const totalAmount = this.calculateTotalAmount(flight, passengers.length);
+        
+        // Create passenger list
+        const passengerFacts = passengers.map((passenger, index) => {
+            return {
+                title: `Passenger ${index + 1}:`,
+                value: `${passenger.fullName} (${passenger.email})`
+            };
+        });
+        
+        return CardFactory.adaptiveCard({
+            type: "AdaptiveCard",
+            version: "1.2",
+            body: [
+                {
+                    type: "Container",
+                    style: "accent",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "📋 Booking Summary",
+                            weight: "Bolder",
+                            size: "Large",
+                            horizontalAlignment: "Center",
+                            color: "Light"
+                        }
+                    ]
+                },
+                {
+                    type: "Container",
+                    spacing: "Medium",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "✈️ Flight Details",
+                            weight: "Bolder",
+                            size: "Medium"
+                        },
+                        {
+                            type: "FactSet",
+                            facts: [
+                                { title: "Flight:", value: `${flight.airline} ${flight.flightNumber}` },
+                                { title: "Route:", value: `${flight.departure.airport} → ${flight.arrival.airport}` },
+                                { title: "Departure:", value: `${flight.departure.time} on ${flight.departure.date}` },
+                                { title: "Arrival:", value: `${flight.arrival.time} on ${flight.arrival.date}` },
+                                { title: "Duration:", value: flight.duration }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    type: "Container",
+                    spacing: "Medium",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "👥 Passenger Details",
+                            weight: "Bolder",
+                            size: "Medium"
+                        },
+                        {
+                            type: "FactSet",
+                            facts: passengerFacts
+                        }
+                    ]
+                },
+                {
+                    type: "Container",
+                    spacing: "Medium",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "💰 Payment Details",
+                            weight: "Bolder",
+                            size: "Medium"
+                        },
+                        {
+                            type: "FactSet",
+                            facts: [
+                                { title: "Base Price:", value: flight.price },
+                                { title: "Passengers:", value: passengers.length.toString() },
+                                { title: "Total Amount:", value: `₹${totalAmount}` }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+    }
+
+    createConfirmationCard(bookingData) {
+        return CardFactory.adaptiveCard({
+            type: "AdaptiveCard",
+            version: "1.2",
+            body: [
+                {
+                    type: "Container",
+                    style: "good",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "🎉 Booking Confirmed!",
+                            weight: "Bolder",
+                            size: "Large",
+                            horizontalAlignment: "Center",
+                            color: "Light"
+                        }
+                    ]
+                },
+                {
+                    type: "Container",
+                    spacing: "Medium",
+                    items: [
+                        {
+                            type: "FactSet",
+                            facts: [
+                                { title: "Booking ID:", value: bookingData.bookingId },
+                                { title: "Payment ID:", value: bookingData.paymentId },
+                                { title: "Status:", value: bookingData.status },
+                                { title: "Total Paid:", value: `₹${bookingData.totalAmount}` },
+                                { title: "Booking Date:", value: new Date(bookingData.bookingDate).toLocaleDateString('en-IN') }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    type: "Container",
+                    spacing: "Medium",
+                    items: [
+                        {
+                            type: "TextBlock",
+                            text: "Important: Please carry a valid ID/Passport for travel. Check-in online 24 hours before departure.",
+                            wrap: true,
+                            size: "Small",
+                            color: "Warning"
+                        }
+                    ]
+                }
+            ]
+        });
+    }
+
+    generateBookingId() {
+        const prefix = 'FB';
+        const timestamp = Date.now().toString().slice(-6);
+        const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+        return `${prefix}${timestamp}${random}`;
+    }
+
+    calculateTotalAmount(flight, passengerCount) {
+        // Extract numeric value from price string (e.g., "₹8,500" -> 8500)
+        const basePrice = parseInt(flight.price.replace(/[^\d]/g, ''));
+        return basePrice * passengerCount;
+    }
+
+    isValidEmail(email) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return emailRegex.test(email);
+    }
+}
+
+module.exports = { BookingDialog };
+
+paymentdiaogjs:
+
+// File: bot/dialogs/paymentDialog.js
+const { ComponentDialog, WaterfallDialog, TextPrompt, ChoicePrompt } = require('botbuilder-dialogs');
+const { MessageFactory, CardFactory } = require('botbuilder');
+const { PaymentService } = require('../../services/paymentService');
+
+const WATERFALL_DIALOG = 'waterfallDialog';
+const TEXT_PROMPT = 'textPrompt';
+const CHOICE_PROMPT = 'choicePrompt';
+
+class PaymentDialog extends ComponentDialog {
+    constructor() {
+        super('PaymentDialog');
+
+        this.paymentService = new PaymentService();
+
+        this.addDialog(new TextPrompt(TEXT_PROMPT));
+        this.addDialog(new ChoicePrompt(CHOICE_PROMPT));
+        this.addDialog(new WaterfallDialog(WATERFALL_DIALOG, [
+            this.paymentMethodStep.bind(this),
+            this.cardDetailsStep.bind(this),
+            this.billingAddressStep.bind(this),
+            this.processPaymentStep.bind(this),
+            this.confirmationStep.bind(this)
+        ]));
+
+        this.initialDialogId = WATERFALL_DIALOG;
+    }
+
+    async paymentMethodStep(stepContext) {
+        const paymentOptions = ['Credit Card', 'Debit Card', 'PayPal', 'Apple Pay'];
+        return await stepContext.prompt(CHOICE_PROMPT, {
+            prompt: 'Please select your payment method:',
+            choices: paymentOptions
+        });
+    }
+
+    async cardDetailsStep(stepContext) {
+        stepContext.values.paymentMethod = stepContext.result.value;
+        
+        if (stepContext.values.paymentMethod === 'PayPal' || stepContext.values.paymentMethod === 'Apple Pay') {
+            // Skip card details for alternative payment methods
+            stepContext.values.skipCardDetails = true;
+            return await stepContext.next();
+        }
+
+        const cardForm = this.createCardDetailsForm();
+        await stepContext.context.sendActivity(MessageFactory.attachment(cardForm));
+        return await stepContext.prompt(TEXT_PROMPT, 'Please enter your card number (16 digits):');
+    }
+
+    async billingAddressStep(stepContext) {
+        if (!stepContext.values.skipCardDetails) {
+            stepContext.values.cardNumber = stepContext.result;
+            
+            // In a real implementation, you would collect all card details securely
+            // For demo purposes, we'll simulate this
+            stepContext.values.cardDetails = {
+                number: stepContext.result,
+                // These would be collected in a real implementation
+                expiryMonth: '12',
+                expiryYear: '2025',
+                cvv: '123'
+            };
+        }
+
+        return await stepContext.prompt(TEXT_PROMPT, 'Please enter your billing address:');
+    }
+
+    async processPaymentStep(stepContext) {
+        stepContext.values.billingAddress = stepContext.result;
+        
+        await stepContext.context.sendActivity('🔄 Processing your payment securely...');
+        
+        try {
+            const paymentData = {
+                method: stepContext.values.paymentMethod,
+                amount: stepContext.options.amount,
+                currency: stepContext.options.currency || 'USD',
+                cardDetails: stepContext.values.cardDetails,
+                billingAddress: stepContext.values.billingAddress
+            };
+
+            const result = await this.paymentService.processSecurePayment(paymentData);
+            stepContext.values.paymentResult = result;
+            
+        } catch (error) {
+            console.error('Payment error:', error);
+            stepContext.values.paymentResult = {
+                success: false,
+                error: 'Payment processing failed. Please try again.'
+            };
+        }
+
+        return await stepContext.next();
+    }
+
+    async confirmationStep(stepContext) {
+        const result = stepContext.values.paymentResult;
+        
+        if (result.success) {
+            const successCard = this.createPaymentSuccessCard(result);
+            await stepContext.context.sendActivity(MessageFactory.attachment(successCard));
+            return await stepContext.endDialog(result);
+        } else {
+            const errorCard = this.createPaymentErrorCard(result.error);
+            await stepContext.context.sendActivity(MessageFactory.attachment(errorCard));
+            return await stepContext.endDialog(result);
+        }
+    }
+
+    createCardDetailsForm() {
+        return CardFactory.adaptiveCard({
+            type: 'AdaptiveCard',
+            version: '1.2',
+            body: [
+                {
+                    type: 'TextBlock',
+                    text: '💳 Secure Payment',
+                    weight: 'Bolder',
+                    size: 'Medium'
+                },
+                {
+                    type: 'TextBlock',
+                    text: 'Your payment information is encrypted and secure.',
+                    size: 'Small',
+                    color: 'Accent'
+                },
+                {
+                    type: 'Input.Text',
+                    id: 'cardNumber',
+                    placeholder: '1234 5678 9012 3456',
+                    maxLength: 19,
+                    style: 'Tel'
+                },
+                {
+                    type: 'ColumnSet',
+                    columns: [
+                        {
+                            type: 'Column',
+                            width: 'stretch',
+                            items: [
+                                {
+                                    type: 'Input.Text',
+                                    id: 'expiryDate',
+                                    placeholder: 'MM/YY',
+                                    maxLength: 5
+                                }
+                            ]
+                        },
+                        {
+                            type: 'Column',
+                            width: 'stretch',
+                            items: [
+                                {
+                                    type: 'Input.Text',
+                                    id: 'cvv',
+                                    placeholder: 'CVV',
+                                    maxLength: 4,
+                                    style: 'Password'
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    type: 'Input.Text',
+                    id: 'cardholderName',
+                    placeholder: 'Cardholder Name'
+                }
+            ]
+        });
+    }
+
+    createPaymentSuccessCard(result) {
+        return CardFactory.adaptiveCard({
+            type: 'AdaptiveCard',
+            version: '1.2',
+            body: [
+                {
+                    type: 'TextBlock',
+                    text: '✅ Payment Successful!',
+                    weight: 'Bolder',
+                    size: 'Large',
+                    color: 'Good'
+                },
+                {
+                    type: 'FactSet',
+                    facts: [
+                        { title: 'Transaction ID:', value: result.transactionId },
+                        { title: 'Amount:', value: `$${result.amount}` },
+                        { title: 'Date:', value: new Date().toLocaleString() },
+                        { title: 'Status:', value: 'Completed' }
+                    ]
+                },
+                {
+                    type: 'TextBlock',
+                    text: '🔒 Your payment has been processed securely.',
+                    size: 'Small',
+                    color: 'Accent'
+                }
+            ]
+        });
+    }
+
+    createPaymentErrorCard(error) {
+        return CardFactory.adaptiveCard({
+            type: 'AdaptiveCard',
+            version: '1.2',
+            body: [
+                {
+                    type: 'TextBlock',
+                    text: '❌ Payment Failed',
+                    weight: 'Bolder',
+                    size: 'Large',
+                    color: 'Attention'
+                },
+                {
+                    type: 'TextBlock',
+                    text: error,
+                    wrap: true,
+                    color: 'Attention'
+                },
+                {
+                    type: 'TextBlock',
+                    text: 'Please check your payment details and try again, or contact your bank.',
+                    wrap: true,
+                    size: 'Small'
+                }
+            ],
+            actions: [
+                {
+                    type: 'Action.Submit',
+                    title: 'Retry Payment',
+                    data: { action: 'retry_payment' }
+                }
+            ]
+        });
+    }
+}
+
+module.exports = { PaymentDialog };
+
+flightservice.js:
+
+// services/flightService.js
+const axios = require('axios');
+require('dotenv').config();
+
+class FlightService {
+    constructor() {
+        // Amadeus API credentials
+        this.clientId = process.env.AMADEUS_API_KEY;
+        this.clientSecret = process.env.AMADEUS_API_SECRET;
+        this.baseURL = 'https://test.api.amadeus.com'; // Use test environment
+        this.accessToken = null;
+        this.tokenExpiry = null;
+        
+        // Alternative API for flight status
+        this.aviationStackKey = process.env.AVIATIONSTACK_API_KEY;
+    }
+
+    // Get OAuth token for Amadeus API
+    async getAccessToken() {
+        try {
+            // Check if token is still valid
+            if (this.accessToken && this.tokenExpiry && new Date() < this.tokenExpiry) {
+                return this.accessToken;
+            }
+
+            const response = await axios.post(`${this.baseURL}/v1/security/oauth2/token`, 
+                new URLSearchParams({
+                    grant_type: 'client_credentials',
+                    client_id: this.clientId,
+                    client_secret: this.clientSecret
+                }), {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+            });
+
+            this.accessToken = response.data.access_token;
+            // Set expiry time (usually 30 minutes for Amadeus)
+            this.tokenExpiry = new Date(Date.now() + (response.data.expires_in - 60) * 1000);
+            
+            return this.accessToken;
+        } catch (error) {
+            console.error('Error getting access token:', error.response?.data || error.message);
+            throw new Error('Failed to authenticate with flight API');
+        }
+    }
+
+    async searchFlights(origin, destination, departureDate, returnDate = null, passengers = 1) {
+        try {
+            // Convert city names to airport codes
+            const originCode = this.getAirportCode(origin);
+            const destinationCode = this.getAirportCode(destination);
+            
+            console.log(`Converting: ${origin} -> ${originCode}, ${destination} -> ${destinationCode}`);
+            
+            // Check if API credentials are available
+            if (!this.clientId || !this.clientSecret) {
+                console.log('API credentials not found, returning mock data');
+                const mockResult = this.getMockFlightData(originCode, destinationCode, departureDate);
+                console.log('Returning mock data:', mockResult);
+                return mockResult;
+            }
+
+            const token = await this.getAccessToken();
+            
+            const params = {
+                originLocationCode: originCode,
+                destinationLocationCode: destinationCode,
+                departureDate: departureDate,
+                adults: passengers,
+                max: 10
+            };
+
+            if (returnDate) {
+                params.returnDate = returnDate;
+            }
+
+            console.log('API request params:', params);
+
+            const response = await axios.get(`${this.baseURL}/v2/shopping/flight-offers`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                params: params
+            });
+
+            console.log('API Response Status:', response.status);
+            console.log('API Response Data Structure:', {
+                hasData: !!response.data,
+                hasDataArray: !!response.data?.data,
+                dataLength: response.data?.data?.length || 0,
+                responseKeys: Object.keys(response.data || {})
+            });
+
+            // Log first few characters of response for debugging
+            console.log('API Response Sample:', JSON.stringify(response.data).substring(0, 500));
+
+            const formattedResult = this.formatFlightResults(response.data);
+            console.log('Final Formatted Result being returned:', JSON.stringify(formattedResult, null, 2));
+
+            // If no flights found in API response, fallback to mock data
+            if (!formattedResult.flights || formattedResult.flights.length === 0) {
+                console.log('No flights in API response, falling back to mock data');
+                const mockResult = this.getMockFlightData(originCode, destinationCode, departureDate);
+                console.log('Returning mock fallback:', mockResult);
+                return mockResult;
+            }
+
+            // Ensure we're returning the correct structure
+            console.log('Successfully returning API result with', formattedResult.flights.length, 'flights');
+            return formattedResult;
+
+        } catch (error) {
+            console.error('Flight search error details:', {
+                message: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                data: error.response?.data,
+                config: {
+                    url: error.config?.url,
+                    params: error.config?.params
+                }
+            });
+            
+            // Fallback to mock data if API fails
+            console.log('API failed, returning mock data');
+            const originCode = this.getAirportCode(origin);
+            const destinationCode = this.getAirportCode(destination);
+            const mockResult = this.getMockFlightData(originCode, destinationCode, departureDate);
+            console.log('Returning error fallback mock data:', mockResult);
+            return mockResult;
+        }
+    }
+
+    async getFlightStatus(flightNumber) {
+        try {
+            // Use AviationStack API for flight status
+            if (this.aviationStackKey) {
+                const response = await axios.get('http://api.aviationstack.com/v1/flights', {
+                    params: {
+                        access_key: this.aviationStackKey,
+                        flight_iata: flightNumber,
+                        limit: 1
+                    }
+                });
+
+                if (response.data.data && response.data.data.length > 0) {
+                    const flight = response.data.data[0];
+                    return {
+                        flightNumber: flight.flight.iata,
+                        status: flight.flight_status,
+                        departure: {
+                            airport: flight.departure.airport,
+                            scheduled: flight.departure.scheduled,
+                            estimated: flight.departure.estimated || flight.departure.scheduled
+                        },
+                        arrival: {
+                            airport: flight.arrival.airport,
+                            scheduled: flight.arrival.scheduled,
+                            estimated: flight.arrival.estimated || flight.arrival.scheduled
+                        }
+                    };
+                }
+            }
+
+            // Fallback to mock data
+            return this.getMockFlightStatus(flightNumber);
+        } catch (error) {
+            console.error('Flight status error:', error.message);
+            return this.getMockFlightStatus(flightNumber);
+        }
+    }
+
+    formatFlightResults(data) {
+        console.log('formatFlightResults called with:', {
+            hasData: !!data,
+            hasDataProperty: !!data?.data,
+            dataType: typeof data?.data,
+            dataLength: Array.isArray(data?.data) ? data.data.length : 'not array',
+            keys: data ? Object.keys(data) : 'no data'
+        });
+
+        // Handle case where data is null or undefined
+        if (!data) {
+            console.log('No data provided to formatFlightResults');
+            return { message: 'No flight data received from API.' };
+        }
+
+        // Handle case where data.data doesn't exist or is not an array
+        if (!data.data || !Array.isArray(data.data) || data.data.length === 0) {
+            console.log('No flights array found in API response');
+            return { message: 'No flights found for your search criteria.' };
+        }
+
+        console.log('Processing', data.data.length, 'flight offers');
+
+        try {
+            const flights = data.data.slice(0, 5).map((offer, index) => {
+                console.log(`Processing flight offer ${index + 1}:`, {
+                    id: offer.id,
+                    hasItineraries: !!offer.itineraries,
+                    itinerariesLength: offer.itineraries?.length,
+                    hasPrice: !!offer.price
+                });
+
+                const itinerary = offer.itineraries[0];
+                const segment = itinerary.segments[0];
+                
+                const flightData = {
+                    id: offer.id,
+                    airline: segment.carrierCode,
+                    flightNumber: `${segment.carrierCode}${segment.number}`,
+                    departure: {
+                        airport: segment.departure.iataCode,
+                        time: new Date(segment.departure.at).toLocaleTimeString('en-IN', { 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                        }),
+                        date: new Date(segment.departure.at).toLocaleDateString('en-IN')
+                    },
+                    arrival: {
+                        airport: segment.arrival.iataCode,
+                        time: new Date(segment.arrival.at).toLocaleTimeString('en-IN', { 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                        }),
+                        date: new Date(segment.arrival.at).toLocaleDateString('en-IN')
+                    },
+                    duration: this.formatDuration(itinerary.duration),
+                    price: `₹${Math.round(parseFloat(offer.price.total) * 83)}` // Convert to INR approximately
+                };
+
+                console.log(`Flight ${index + 1} processed:`, flightData);
+                return flightData;
+            });
+
+            console.log('Successfully formatted', flights.length, 'flights');
+            return { flights };
+
+        } catch (formatError) {
+            console.error('Error formatting flight results:', formatError);
+            console.log('Falling back due to formatting error - returning empty flights array');
+            return { 
+                flights: [],
+                message: 'Error processing flight data. Please try again.' 
+            };
+        }
+    }
+
+    // Mock data for when API is not available
+    getMockFlightData(origin, destination, departureDate) {
+        const mockFlights = [
+            {
+                id: 'mock-1',
+                airline: 'AI',
+                flightNumber: 'AI101',
+                departure: {
+                    airport: origin,
+                    time: '10:30 AM',
+                    date: new Date(departureDate).toLocaleDateString('en-IN')
+                },
+                arrival: {
+                    airport: destination,
+                    time: '1:45 PM',
+                    date: new Date(departureDate).toLocaleDateString('en-IN')
+                },
+                duration: '3h 15m',
+                price: '₹4,500'
+            },
+            {
+                id: 'mock-2',
+                airline: '6E',
+                flightNumber: '6E234',
+                departure: {
+                    airport: origin,
+                    time: '2:15 PM',
+                    date: new Date(departureDate).toLocaleDateString('en-IN')
+                },
+                arrival: {
+                    airport: destination,
+                    time: '5:30 PM',
+                    date: new Date(departureDate).toLocaleDateString('en-IN')
+                },
+                duration: '3h 15m',
+                price: '₹3,800'
+            },
+            {
+                id: 'mock-3',
+                airline: 'SG',
+                flightNumber: 'SG456',
+                departure: {
+                    airport: origin,
+                    time: '6:00 PM',
+                    date: new Date(departureDate).toLocaleDateString('en-IN')
+                },
+                arrival: {
+                    airport: destination,
+                    time: '9:15 PM',
+                    date: new Date(departureDate).toLocaleDateString('en-IN')
+                },
+                duration: '3h 15m',
+                price: '₹5,200'
+            }
+        ];
+
+        return { flights: mockFlights };
+    }
+
+    getMockFlightStatus(flightNumber) {
+        const mockStatuses = ['active', 'scheduled', 'landed', 'cancelled', 'delayed'];
+        const randomStatus = mockStatuses[Math.floor(Math.random() * mockStatuses.length)];
+        
+        return {
+            flightNumber: flightNumber,
+            status: randomStatus,
+            departure: {
+                airport: 'Chhatrapati Shivaji International Airport (BOM)',
+                scheduled: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2 hours from now
+                estimated: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()
+            },
+            arrival: {
+                airport: 'Indira Gandhi International Airport (DEL)',
+                scheduled: new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString(), // 5 hours from now
+                estimated: new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString()
+            }
+        };
+    }
+
+    formatDuration(isoDuration) {
+        // Convert ISO 8601 duration (PT3H15M) to readable format (3h 15m)
+        const match = isoDuration.match(/PT(\d+H)?(\d+M)?/);
+        let formatted = '';
+        
+        if (match[1]) {
+            formatted += match[1].replace('H', 'h ');
+        }
+        if (match[2]) {
+            formatted += match[2].replace('M', 'm');
+        }
+        
+        return formatted.trim() || isoDuration;
+    }
+
+    // Helper method to get airport codes - EXPANDED WITH MORE CITIES
+    getAirportCode(cityName) {
+        const airportCodes = {
+            // Major Indian cities
+            'mumbai': 'BOM',
+            'delhi': 'DEL',
+            'new delhi': 'DEL',
+            'bangalore': 'BLR',
+            'bengaluru': 'BLR',
+            'chennai': 'MAA',
+            'kolkata': 'CCU',
+            'hyderabad': 'HYD',
+            'pune': 'PNQ',
+            'goa': 'GOI',
+            'panaji': 'GOI',
+            'ahmedabad': 'AMD',
+            'cochin': 'COK',
+            'kochi': 'COK',
+            'jaipur': 'JAI',
+            'lucknow': 'LKO',
+            'bhubaneswar': 'BBI',
+            'thiruvananthapuram': 'TRV',
+            'trivandrum': 'TRV',
+            'surat': 'STV',
+            'vadodara': 'BDQ',
+            'indore': 'IDR',
+            'nagpur': 'NAG',
+            'coimbatore': 'CJB',
+            'vizag': 'VTZ',
+            'visakhapatnam': 'VTZ',
+            'patna': 'PAT',
+            'bhopal': 'BHO',
+            'chandigarh': 'IXC',
+            'amritsar': 'ATQ',
+            'guwahati': 'GAU',
+            'imphal': 'IMF',
+            'agartala': 'IXA',
+            'raipur': 'RPR',
+            'ranchi': 'IXR',
+            'jammu': 'IXJ',
+            'srinagar': 'SXR',
+            'leh': 'IXL',
+            'port blair': 'IXZ',
+            
+            // International cities (common destinations)
+            'london': 'LHR',
+            'new york': 'JFK',
+            'dubai': 'DXB',
+            'singapore': 'SIN',
+            'bangkok': 'BKK',
+            'tokyo': 'NRT',
+            'paris': 'CDG',
+            'amsterdam': 'AMS',
+            'frankfurt': 'FRA',
+            'zurich': 'ZUR',
+            'hong kong': 'HKG',
+            'kuala lumpur': 'KUL',
+            'sydney': 'SYD',
+            'melbourne': 'MEL',
+            'toronto': 'YYZ',
+            'vancouver': 'YVR'
+        };
+        
+        const input = cityName.toLowerCase().trim();
+        
+        // First, check if it's already a valid 3-letter airport code
+        if (cityName.length === 3 && /^[A-Z]{3}$/i.test(cityName)) {
+            const upperCode = cityName.toUpperCase();
+            console.log(`Input is already airport code: ${cityName} -> ${upperCode}`);
+            return upperCode;
+        }
+        
+        // Then check if it matches a city name in our mapping
+        const code = airportCodes[input];
+        if (code) {
+            console.log(`Found airport code: ${cityName} -> ${code}`);
+            return code;
+        }
+        
+        // If no match found, return the original input in uppercase
+        console.log(`Airport code not found for: ${cityName}, using as-is`);
+        return cityName.toUpperCase();
+    }
+}
+
+module.exports = { FlightService };
