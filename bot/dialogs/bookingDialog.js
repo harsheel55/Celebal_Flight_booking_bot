@@ -13,8 +13,8 @@ class BookingDialog extends ComponentDialog {
     constructor() {
         super('BookingDialog');
 
-        this.databaseService = new DatabaseService();
-        this.paymentService = new PaymentService();
+        this.databaseService = require('../../services/databaseService');
+        this.paymentService = require('../../services/paymentService');
 
         this.addDialog(new TextPrompt(TEXT_PROMPT));
         this.addDialog(new ConfirmPrompt(CONFIRM_PROMPT));
