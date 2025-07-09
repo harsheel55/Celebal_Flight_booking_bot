@@ -435,7 +435,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Harsheel**
 - GitHub: [@harsheel55](https://github.com/harsheel55)
-- LinkedIn: [Your LinkedIn Profile]
+- LinkedIn: [[Your LinkedIn Profile](https://www.linkedin.com/in/harsheel-kasodariya-22a31b253/)]
 
 ## 🙏 Acknowledgments
 
