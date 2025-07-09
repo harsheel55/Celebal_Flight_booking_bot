@@ -1,91 +1,101 @@
-const mysql = require('mysql2/promise');
-const { v4: uuidv4 } = require('uuid');
+const mysql = require("mysql2/promise");
+const { v4: uuidv4 } = require("uuid");
 
 class DatabaseService {
-    constructor() {
-        this.pool = null;
-        this.isInitialized = false;
+  constructor() {
+    this.pool = null;
+    this.isInitialized = false;
+  }
+
+  async initialize() {
+    try {
+      // Create connection pool
+      this.pool = mysql.createPool({
+        host: process.env.DB_HOST || "localhost",
+        port: process.env.DB_PORT || 3306,
+        user: process.env.DB_USERNAME || "root",
+        password: process.env.DB_PASSWORD || "",
+        database: process.env.DB_NAME || "flight_booking_db",
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0,
+        acquireTimeout: 60000,
+        timeout: 60000,
+        reconnect: true,
+      });
+
+      // Test connection
+      const connection = await this.pool.getConnection();
+      console.log("Database connected successfully");
+      connection.release();
+
+      this.isInitialized = true;
+      return true;
+    } catch (error) {
+      console.error("Database connection failed:", error.message);
+
+      // If database doesn't exist, try to create it
+      if (error.code === "ER_BAD_DB_ERROR") {
+        await this.createDatabase();
+        return await this.initialize();
+      }
+
+      throw error;
+    }
+  }
+
+  async createDatabase() {
+    try {
+      const tempPool = mysql.createPool({
+        host: process.env.DB_HOST || "localhost",
+        port: process.env.DB_PORT || 3306,
+        user: process.env.DB_USERNAME || "root",
+        password: process.env.DB_PASSWORD || "",
+        waitForConnections: true,
+        connectionLimit: 1,
+      });
+
+      const connection = await tempPool.getConnection();
+      await connection.execute(
+        `CREATE DATABASE IF NOT EXISTS ${
+          process.env.DB_NAME || "flight_booking_db"
+        }`
+      );
+      connection.release();
+      await tempPool.end();
+
+      console.log("Database created successfully");
+    } catch (error) {
+      console.error("Failed to create database:", error.message);
+      throw error;
+    }
+  }
+
+  async executeQuery(query, params = []) {
+    if (!this.isInitialized) {
+      await this.initialize();
     }
 
-    async initialize() {
-        try {
-            // Create connection pool
-            this.pool = mysql.createPool({
-                host: process.env.DB_HOST || 'localhost',
-                port: process.env.DB_PORT || 3306,
-                user: process.env.DB_USERNAME || 'root',
-                password: process.env.DB_PASSWORD || '',
-                database: process.env.DB_NAME || 'flight_booking_db',
-                waitForConnections: true,
-                connectionLimit: 10,
-                queueLimit: 0,
-                acquireTimeout: 60000,
-                timeout: 60000,
-                reconnect: true
-            });
-
-            // Test connection
-            const connection = await this.pool.getConnection();
-            console.log('Database connected successfully');
-            connection.release();
-            
-            this.isInitialized = true;
-            return true;
-        } catch (error) {
-            console.error('Database connection failed:', error.message);
-            
-            // If database doesn't exist, try to create it
-            if (error.code === 'ER_BAD_DB_ERROR') {
-                await this.createDatabase();
-                return await this.initialize();
-            }
-            
-            throw error;
-        }
+    try {
+      const [rows] = await this.pool.execute(query, params);
+      return rows;
+    } catch (error) {
+      console.error("Database query error:", error.message);
+      console.error("Query:", query);
+      console.error("Params:", params);
+      throw error;
     }
+  }
 
-    async createDatabase() {
-        try {
-            const tempPool = mysql.createPool({
-                host: process.env.DB_HOST || 'localhost',
-                port: process.env.DB_PORT || 3306,
-                user: process.env.DB_USERNAME || 'root',
-                password: process.env.DB_PASSWORD || '',
-                waitForConnections: true,
-                connectionLimit: 1
-            });
-
-            const connection = await tempPool.getConnection();
-            await connection.execute(`CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME || 'flight_booking_db'}`);
-            connection.release();
-            await tempPool.end();
-            
-            console.log('Database created successfully');
-        } catch (error) {
-            console.error('Failed to create database:', error.message);
-            throw error;
-        }
-    }
-
-    async executeQuery(query, params = []) {
-        if (!this.isInitialized) {
-            await this.initialize();
-        }
-
-        try {
-            const [rows] = await this.pool.execute(query, params);
-            return rows;
-        } catch (error) {
-            console.error('Database query error:', error.message);
-            console.error('Query:', query);
-            console.error('Params:', params);
-            throw error;
-        }
-    }
-
-    // User operations
-    async createUser(userId, conversationId, name = null, email = null, phone = null) {
-        const query = `
+  // User operations
+  async createUser(
+    userId,
+    conversationId,
+    name = null,
+    email = null,
+    phone = null
+  ) {
+    const query = `
             INSERT INTO users (user_id, conversation_id, name, email, phone) 
             VALUES (?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE 
@@ -95,19 +105,25 @@ class DatabaseService {
                 phone = COALESCE(VALUES(phone), phone),
                 updated_at = CURRENT_TIMESTAMP
         `;
-        
-        return await this.executeQuery(query, [userId, conversationId, name, email, phone]);
-    }
 
-    async getUser(userId) {
-        const query = 'SELECT * FROM users WHERE user_id = ?';
-        const result = await this.executeQuery(query, [userId]);
-        return result[0] || null;
-    }
+    return await this.executeQuery(query, [
+      userId,
+      conversationId,
+      name,
+      email,
+      phone,
+    ]);
+  }
 
-    async updateUser(userId, userData) {
-        const { name, email, phone } = userData;
-        const query = `
+  async getUser(userId) {
+    const query = "SELECT * FROM users WHERE user_id = ?";
+    const result = await this.executeQuery(query, [userId]);
+    return result[0] || null;
+  }
+
+  async updateUser(userId, userData) {
+    const { name, email, phone } = userData;
+    const query = `
             UPDATE users 
             SET name = COALESCE(?, name), 
                 email = COALESCE(?, email), 
@@ -115,15 +131,15 @@ class DatabaseService {
                 updated_at = CURRENT_TIMESTAMP
             WHERE user_id = ?
         `;
-        
-        return await this.executeQuery(query, [name, email, phone, userId]);
-    }
 
-    // Flight search operations
-    async searchFlights(searchParams) {
-        const { departure, arrival, departureDate, passengers = 1 } = searchParams;
-        
-        const query = `
+    return await this.executeQuery(query, [name, email, phone, userId]);
+  }
+
+  // Flight search operations
+  async searchFlights(searchParams) {
+    const { departure, arrival, departureDate, passengers = 1 } = searchParams;
+
+    const query = `
             SELECT 
                 fs.id as schedule_id,
                 f.flight_number,
@@ -154,20 +170,22 @@ class DatabaseService {
             ORDER BY fs.price ASC, fs.departure_time ASC
             LIMIT 10
         `;
-        
-        const departurePattern = `%${departure}%`;
-        const arrivalPattern = `%${arrival}%`;
-        
-        return await this.executeQuery(query, [
-            departurePattern, departurePattern,
-            arrivalPattern, arrivalPattern,
-            departureDate,
-            passengers
-        ]);
-    }
 
-    async getFlightById(scheduleId) {
-        const query = `
+    const departurePattern = `%${departure}%`;
+    const arrivalPattern = `%${arrival}%`;
+
+    return await this.executeQuery(query, [
+      departurePattern,
+      departurePattern,
+      arrivalPattern,
+      arrivalPattern,
+      departureDate,
+      passengers,
+    ]);
+  }
+
+  async getFlightById(scheduleId) {
+    const query = `
             SELECT 
                 fs.id as schedule_id,
                 f.flight_number,
@@ -190,73 +208,72 @@ class DatabaseService {
             JOIN airports arr_airport ON f.arrival_airport_id = arr_airport.id
             WHERE fs.id = ?
         `;
-        
-        const result = await this.executeQuery(query, [scheduleId]);
-        return result[0] || null;
-    }
 
-    // Booking operations
-    async createBooking(bookingData) {
-        const connection = await this.pool.getConnection();
-        
-        try {
-            await connection.beginTransaction();
-            
-            const bookingReference = this.generateBookingReference();
-            
-            // Create booking
-            const bookingQuery = `
+    const result = await this.executeQuery(query, [scheduleId]);
+    return result[0] || null;
+  }
+
+  // Booking operations
+  async createBooking(bookingData) {
+    const connection = await this.pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      const bookingReference = this.generateBookingReference();
+
+      // Create booking
+      const bookingQuery = `
                 INSERT INTO bookings (
                     booking_reference, user_id, flight_schedule_id, 
                     passenger_count, total_price, status
                 ) VALUES (?, ?, ?, ?, ?, 'pending')
             `;
-            
-            const [bookingResult] = await connection.execute(bookingQuery, [
-                bookingReference,
-                bookingData.userId,
-                bookingData.flightScheduleId,
-                bookingData.passengerCount,
-                bookingData.totalPrice
-            ]);
-            
-            const bookingId = bookingResult.insertId;
-            
-            // Update available seats
-            const updateSeatsQuery = `
+
+      const [bookingResult] = await connection.execute(bookingQuery, [
+        bookingReference,
+        bookingData.userId,
+        bookingData.flightScheduleId,
+        bookingData.passengerCount,
+        bookingData.totalPrice,
+      ]);
+
+      const bookingId = bookingResult.insertId;
+
+      // Update available seats
+      const updateSeatsQuery = `
                 UPDATE flight_schedules 
                 SET available_seats = available_seats - ?
                 WHERE id = ? AND available_seats >= ?
             `;
-            
-            const [updateResult] = await connection.execute(updateSeatsQuery, [
-                bookingData.passengerCount,
-                bookingData.flightScheduleId,
-                bookingData.passengerCount
-            ]);
-            
-            if (updateResult.affectedRows === 0) {
-                throw new Error('Not enough seats available');
-            }
-            
-            await connection.commit();
-            
-            return {
-                bookingId,
-                bookingReference,
-                status: 'success'
-            };
-            
-        } catch (error) {
-            await connection.rollback();
-            throw error;
-        } finally {
-            connection.release();
-        }
-    }
 
-    async getBooking(bookingReference) {
-        const query = `
+      const [updateResult] = await connection.execute(updateSeatsQuery, [
+        bookingData.passengerCount,
+        bookingData.flightScheduleId,
+        bookingData.passengerCount,
+      ]);
+
+      if (updateResult.affectedRows === 0) {
+        throw new Error("Not enough seats available");
+      }
+
+      await connection.commit();
+
+      return {
+        bookingId,
+        bookingReference,
+        status: "success",
+      };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async getBooking(bookingReference) {
+    const query = `
             SELECT 
                 b.*,
                 f.flight_number,
@@ -276,13 +293,13 @@ class DatabaseService {
             JOIN airports arr_airport ON f.arrival_airport_id = arr_airport.id
             WHERE b.booking_reference = ?
         `;
-        
-        const result = await this.executeQuery(query, [bookingReference]);
-        return result[0] || null;
-    }
 
-    async getUserBookings(userId, limit = 10) {
-        const query = `
+    const result = await this.executeQuery(query, [bookingReference]);
+    return result[0] || null;
+  }
+
+  async getUserBookings(userId, limit = 10) {
+    const query = `
             SELECT 
                 b.*,
                 f.flight_number,
@@ -302,140 +319,322 @@ class DatabaseService {
             ORDER BY b.booking_date DESC
             LIMIT ?
         `;
-        
-        return await this.executeQuery(query, [userId, limit]);
-    }
 
-    async updateBookingStatus(bookingId, status) {
-        const query = 'UPDATE bookings SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
-        return await this.executeQuery(query, [status, bookingId]);
-    }
+    return await this.executeQuery(query, [userId, limit]);
+  }
 
-    async updatePaymentStatus(bookingId, paymentStatus, transactionId = null) {
-        const query = `
-            UPDATE bookings 
-            SET payment_status = ?, 
-                payment_transaction_id = ?,
-                updated_at = CURRENT_TIMESTAMP 
-            WHERE id = ?
-        `;
-        return await this.executeQuery(query, [paymentStatus, transactionId, bookingId]);
-    }
+  async updateBookingStatus(bookingId, status) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        UPDATE bookings 
+        SET status = ?, updatedAt = CURRENT_TIMESTAMP
+        WHERE bookingId = ?
+      `;
 
-    // Passenger operations
-    async addPassenger(bookingId, passengerData) {
-        const query = `
+      this.db.run(query, [status, bookingId], function(err) {
+        if (err) {
+          console.error('Error updating booking status:', err);
+          reject(err);
+        } else {
+          console.log('Booking status updated successfully');
+          resolve({ changes: this.changes });
+        }
+      });
+    });
+  }
+
+  async updatePaymentStatus(transactionId, status, gatewayTransactionId = null) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        UPDATE payments 
+        SET paymentStatus = ?, gatewayTransactionId = ?, updatedAt = CURRENT_TIMESTAMP
+        WHERE transactionId = ?
+      `;
+
+      this.db.run(query, [status, gatewayTransactionId, transactionId], function(err) {
+        if (err) {
+          console.error('Error updating payment status:', err);
+          reject(err);
+        } else {
+          console.log('Payment status updated successfully');
+          resolve({ changes: this.changes });
+        }
+      });
+    });
+  }
+
+async getPaymentsByBookingId(bookingId) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        SELECT * FROM payments WHERE bookingId = ? ORDER BY createdAt DESC
+      `;
+
+      this.db.all(query, [bookingId], (err, rows) => {
+        if (err) {
+          console.error('Error getting payments for booking:', err);
+          reject(err);
+        } else {
+          resolve(rows);
+        }
+      });
+    });
+  }
+
+  async getPaymentStatistics() {
+    return new Promise((resolve, reject) => {
+      const query = `
+        SELECT 
+          currency,
+          paymentStatus,
+          COUNT(*) as count,
+          SUM(amount) as total_amount,
+          AVG(amount) as avg_amount
+        FROM payments 
+        GROUP BY currency, paymentStatus
+        ORDER BY currency, paymentStatus
+      `;
+
+      this.db.all(query, [], (err, rows) => {
+        if (err) {
+          console.error('Error getting payment statistics:', err);
+          reject(err);
+        } else {
+          resolve(rows);
+        }
+      });
+    });
+  }
+  // Passenger operations
+  async addPassenger(bookingId, passengerData) {
+    const query = `
             INSERT INTO passengers (
                 booking_id, first_name, last_name, date_of_birth, 
                 gender, passport_number, nationality
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `;
-        
-        return await this.executeQuery(query, [
-            bookingId,
-            passengerData.firstName,
-            passengerData.lastName,
-            passengerData.dateOfBirth,
-            passengerData.gender,
-            passengerData.passportNumber,
-            passengerData.nationality
-        ]);
-    }
 
-    async getPassengers(bookingId) {
-        const query = 'SELECT * FROM passengers WHERE booking_id = ?';
-        return await this.executeQuery(query, [bookingId]);
-    }
+    return await this.executeQuery(query, [
+      bookingId,
+      passengerData.firstName,
+      passengerData.lastName,
+      passengerData.dateOfBirth,
+      passengerData.gender,
+      passengerData.passportNumber,
+      passengerData.nationality,
+    ]);
+  }
 
-    // Payment operations
-    async createPaymentRecord(paymentData) {
-        const query = `
-            INSERT INTO payment_history (
-                booking_id, transaction_id, amount, payment_method, 
-                payment_status, payment_gateway, gateway_transaction_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        `;
-        
-        return await this.executeQuery(query, [
-            paymentData.bookingId,
-            paymentData.transactionId,
-            paymentData.amount,
-            paymentData.paymentMethod,
-            paymentData.paymentStatus,
-            paymentData.paymentGateway,
-            paymentData.gatewayTransactionId
-        ]);
-    }
+  async getPassengers(bookingId) {
+    const query = "SELECT * FROM passengers WHERE booking_id = ?";
+    return await this.executeQuery(query, [bookingId]);
+  }
 
-    async updatePaymentRecord(transactionId, status, failureReason = null) {
-        const query = `
+  // Payment operations
+  async createPaymentRecord(paymentData) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        INSERT INTO payments (
+          bookingId, transactionId, amount, currency, paymentMethod, 
+          paymentStatus, paymentGateway, gatewayTransactionId, 
+          customerEmail, customerName, cardLast4, errorMessage
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+
+      const values = [
+        paymentData.bookingId,
+        paymentData.transactionId,
+        paymentData.amount,
+        paymentData.currency || 'USD',
+        paymentData.paymentMethod,
+        paymentData.paymentStatus,
+        paymentData.paymentGateway,
+        paymentData.gatewayTransactionId,
+        paymentData.customerEmail,
+        paymentData.customerName,
+        paymentData.cardLast4,
+        paymentData.errorMessage
+      ];
+
+      this.db.run(query, values, function(err) {
+        if (err) {
+          console.error('Error creating payment record:', err);
+          reject(err);
+        } else {
+          console.log('Payment record created successfully with ID:', this.lastID);
+          resolve({
+            id: this.lastID,
+            transactionId: paymentData.transactionId
+          });
+        }
+      });
+    });
+  }
+
+  async saveBooking(bookingData) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        INSERT INTO bookings (
+          bookingId, flightData, passengers, searchParams, 
+          bookingDate, status, totalAmount, currency, paymentId, transactionId
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+
+      const values = [
+        bookingData.bookingId,
+        JSON.stringify(bookingData.flight),
+        JSON.stringify(bookingData.passengers),
+        JSON.stringify(bookingData.searchParams),
+        bookingData.bookingDate.toISOString(),
+        bookingData.status,
+        bookingData.totalAmount,
+        bookingData.currency || 'USD',
+        bookingData.paymentId,
+        bookingData.transactionId
+      ];
+
+      this.db.run(query, values, function(err) {
+        if (err) {
+          console.error('Error saving booking:', err);
+          reject(err);
+        } else {
+          console.log('Booking saved successfully with ID:', this.lastID);
+          resolve({
+            id: this.lastID,
+            bookingId: bookingData.bookingId
+          });
+        }
+      });
+    });
+  }
+  
+  async getPaymentByTransactionId(transactionId) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        SELECT * FROM payments WHERE transactionId = ?
+      `;
+
+      this.db.get(query, [transactionId], (err, row) => {
+        if (err) {
+          console.error('Error getting payment:', err);
+          reject(err);
+        } else {
+          resolve(row);
+        }
+      });
+    });
+  }
+
+  async getBookingById(bookingId) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        SELECT * FROM bookings WHERE bookingId = ?
+      `;
+
+      this.db.get(query, [bookingId], (err, row) => {
+        if (err) {
+          console.error('Error getting booking:', err);
+          reject(err);
+        } else {
+          if (row) {
+            // Parse JSON fields
+            row.flightData = JSON.parse(row.flightData);
+            row.passengers = JSON.parse(row.passengers);
+            row.searchParams = JSON.parse(row.searchParams);
+          }
+          resolve(row);
+        }
+      });
+    });
+  }
+
+
+  // In databaseService.js, inside the DatabaseService class
+
+  async getPaymentByBookingId(bookingId) {
+    const query =
+      "SELECT * FROM payment_history WHERE booking_id = ? ORDER BY payment_date DESC LIMIT 1";
+    const result = await this.executeQuery(query, [bookingId]);
+    return result[0] || null;
+  }
+
+  async updatePaymentRecord(transactionId, status, failureReason = null) {
+    const query = `
             UPDATE payment_history 
             SET payment_status = ?, failure_reason = ?, payment_date = CURRENT_TIMESTAMP
             WHERE transaction_id = ?
         `;
-        return await this.executeQuery(query, [status, failureReason, transactionId]);
-    }
+    return await this.executeQuery(query, [
+      status,
+      failureReason,
+      transactionId,
+    ]);
+  }
 
-    // Conversation state operations
-    async saveConversationState(userId, conversationId, dialogState) {
-        const query = `
+  // Conversation state operations
+  async saveConversationState(userId, conversationId, dialogState) {
+    const query = `
             INSERT INTO conversation_state (user_id, conversation_id, dialog_state)
             VALUES (?, ?, ?)
             ON DUPLICATE KEY UPDATE 
                 dialog_state = VALUES(dialog_state),
                 last_activity = CURRENT_TIMESTAMP
         `;
-        
-        return await this.executeQuery(query, [
-            userId, 
-            conversationId, 
-            JSON.stringify(dialogState)
-        ]);
-    }
 
-    async getConversationState(userId, conversationId) {
-        const query = `
+    return await this.executeQuery(query, [
+      userId,
+      conversationId,
+      JSON.stringify(dialogState),
+    ]);
+  }
+
+  async getConversationState(userId, conversationId) {
+    const query = `
             SELECT dialog_state 
             FROM conversation_state 
             WHERE user_id = ? AND conversation_id = ?
         `;
-        
-        const result = await this.executeQuery(query, [userId, conversationId]);
-        return result[0] ? JSON.parse(result[0].dialog_state) : null;
-    }
 
-    async clearConversationState(userId, conversationId) {
-        const query = 'DELETE FROM conversation_state WHERE user_id = ? AND conversation_id = ?';
-        return await this.executeQuery(query, [userId, conversationId]);
-    }
+    const result = await this.executeQuery(query, [userId, conversationId]);
+    return result[0] ? JSON.parse(result[0].dialog_state) : null;
+  }
 
-    // Utility methods
-    generateBookingReference() {
-        return 'FL' + Date.now().toString().slice(-6) + Math.random().toString(36).substr(2, 4).toUpperCase();
-    }
+  async clearConversationState(userId, conversationId) {
+    const query =
+      "DELETE FROM conversation_state WHERE user_id = ? AND conversation_id = ?";
+    return await this.executeQuery(query, [userId, conversationId]);
+  }
 
-    async close() {
-        if (this.pool) {
-            await this.pool.end();
-            this.isInitialized = false;
-        }
-    }
+  // Utility methods
+  generateBookingReference() {
+    return (
+      "FL" +
+      Date.now().toString().slice(-6) +
+      Math.random().toString(36).substr(2, 4).toUpperCase()
+    );
+  }
 
-    // Health check
-    async healthCheck() {
-        try {
-            const result = await this.executeQuery('SELECT 1 as health');
-            return result.length > 0;
-        } catch (error) {
-            return false;
-        }
+  async close() {
+    if (this.pool) {
+      await this.pool.end();
+      this.isInitialized = false;
     }
+  }
 
-    // Database setup methods
-    async setupTables() {
-        const tables = [
-            // Users table
-            `CREATE TABLE IF NOT EXISTS users (
+  // Health check
+  async healthCheck() {
+    try {
+      const result = await this.executeQuery("SELECT 1 as health");
+      return result.length > 0;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Database setup methods
+  async setupTables() {
+    const tables = [
+      // Users table
+      `CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id VARCHAR(255) UNIQUE NOT NULL,
                 conversation_id VARCHAR(255),
@@ -446,17 +645,17 @@ class DatabaseService {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_user_id (user_id)
             )`,
-            
-            // Airlines table
-            `CREATE TABLE IF NOT EXISTS airlines (
+
+      // Airlines table
+      `CREATE TABLE IF NOT EXISTS airlines (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 code VARCHAR(10) UNIQUE NOT NULL,
                 name VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
-            
-            // Airports table
-            `CREATE TABLE IF NOT EXISTS airports (
+
+      // Airports table
+      `CREATE TABLE IF NOT EXISTS airports (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 code VARCHAR(10) UNIQUE NOT NULL,
                 name VARCHAR(255) NOT NULL,
@@ -465,9 +664,9 @@ class DatabaseService {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_city (city)
             )`,
-            
-            // Flights table
-            `CREATE TABLE IF NOT EXISTS flights (
+
+      // Flights table
+      `CREATE TABLE IF NOT EXISTS flights (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 flight_number VARCHAR(20) NOT NULL,
                 airline_id INT NOT NULL,
@@ -484,9 +683,9 @@ class DatabaseService {
                 FOREIGN KEY (departure_airport_id) REFERENCES airports(id),
                 FOREIGN KEY (arrival_airport_id) REFERENCES airports(id)
             )`,
-            
-            // Flight schedules table
-            `CREATE TABLE IF NOT EXISTS flight_schedules (
+
+      // Flight schedules table
+      `CREATE TABLE IF NOT EXISTS flight_schedules (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 flight_id INT NOT NULL,
                 flight_date DATE NOT NULL,
@@ -499,9 +698,9 @@ class DatabaseService {
                 FOREIGN KEY (flight_id) REFERENCES flights(id),
                 UNIQUE KEY unique_flight_date (flight_id, flight_date)
             )`,
-            
-            // Bookings table
-            `CREATE TABLE IF NOT EXISTS bookings (
+
+      // Bookings table
+      `CREATE TABLE IF NOT EXISTS bookings (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 booking_reference VARCHAR(20) UNIQUE NOT NULL,
                 user_id VARCHAR(255) NOT NULL,
@@ -516,9 +715,9 @@ class DatabaseService {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (flight_schedule_id) REFERENCES flight_schedules(id)
             )`,
-            
-            // Passengers table
-            `CREATE TABLE IF NOT EXISTS passengers (
+
+      // Passengers table
+      `CREATE TABLE IF NOT EXISTS passengers (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 booking_id INT NOT NULL,
                 first_name VARCHAR(255) NOT NULL,
@@ -530,9 +729,9 @@ class DatabaseService {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
             )`,
-            
-            // Payment history table
-            `CREATE TABLE IF NOT EXISTS payment_history (
+
+      // Payment history table
+      `CREATE TABLE IF NOT EXISTS payment_history (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 booking_id INT NOT NULL,
                 transaction_id VARCHAR(255) UNIQUE NOT NULL,
@@ -545,9 +744,9 @@ class DatabaseService {
                 failure_reason TEXT,
                 FOREIGN KEY (booking_id) REFERENCES bookings(id)
             )`,
-            
-            // Conversation state table
-            `CREATE TABLE IF NOT EXISTS conversation_state (
+
+      // Conversation state table
+      `CREATE TABLE IF NOT EXISTS conversation_state (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id VARCHAR(255) NOT NULL,
                 conversation_id VARCHAR(255) NOT NULL,
@@ -555,53 +754,68 @@ class DatabaseService {
                 last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_conversation (user_id, conversation_id)
-            )`
-        ];
+            )`,
+    ];
 
-        for (const table of tables) {
-            await this.executeQuery(table);
-        }
-
-        console.log('Database tables created successfully');
+    for (const table of tables) {
+      await this.executeQuery(table);
     }
 
-    async insertSampleData() {
-        try {
-            // Insert airlines
-            const airlines = [
-                ['AA', 'American Airlines'],
-                ['UA', 'United Airlines'],
-                ['DL', 'Delta Air Lines'],
-                ['WN', 'Southwest Airlines']
-            ];
+    console.log("Database tables created successfully");
+  }
 
-            for (const [code, name] of airlines) {
-                await this.executeQuery(
-                    'INSERT IGNORE INTO airlines (code, name) VALUES (?, ?)',
-                    [code, name]
-                );
-            }
+  async insertSampleData() {
+    try {
+      // Insert airlines
+      const airlines = [
+        ["AA", "American Airlines"],
+        ["UA", "United Airlines"],
+        ["DL", "Delta Air Lines"],
+        ["WN", "Southwest Airlines"],
+      ];
 
-            // Insert airports
-            const airports = [
-                ['JFK', 'John F. Kennedy International Airport', 'New York', 'United States'],
-                ['LAX', 'Los Angeles International Airport', 'Los Angeles', 'United States'],
-                ['ORD', 'Chicago O\'Hare International Airport', 'Chicago', 'United States'],
-                ['MIA', 'Miami International Airport', 'Miami', 'United States']
-            ];
+      for (const [code, name] of airlines) {
+        await this.executeQuery(
+          "INSERT IGNORE INTO airlines (code, name) VALUES (?, ?)",
+          [code, name]
+        );
+      }
 
-            for (const [code, name, city, country] of airports) {
-                await this.executeQuery(
-                    'INSERT IGNORE INTO airports (code, name, city, country) VALUES (?, ?, ?, ?)',
-                    [code, name, city, country]
-                );
-            }
+      // Insert airports
+      const airports = [
+        [
+          "JFK",
+          "John F. Kennedy International Airport",
+          "New York",
+          "United States",
+        ],
+        [
+          "LAX",
+          "Los Angeles International Airport",
+          "Los Angeles",
+          "United States",
+        ],
+        [
+          "ORD",
+          "Chicago O'Hare International Airport",
+          "Chicago",
+          "United States",
+        ],
+        ["MIA", "Miami International Airport", "Miami", "United States"],
+      ];
 
-            console.log('Sample data inserted successfully');
-        } catch (error) {
-            console.error('Error inserting sample data:', error.message);
-        }
+      for (const [code, name, city, country] of airports) {
+        await this.executeQuery(
+          "INSERT IGNORE INTO airports (code, name, city, country) VALUES (?, ?, ?, ?)",
+          [code, name, city, country]
+        );
+      }
+
+      console.log("Sample data inserted successfully");
+    } catch (error) {
+      console.error("Error inserting sample data:", error.message);
     }
+  }
 }
 
 module.exports = new DatabaseService();
