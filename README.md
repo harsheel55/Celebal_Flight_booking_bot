@@ -1,4 +1,4 @@
-# Celebal Flight Ticket Booking Bot 🛫
+# Flight Ticket Booking Bot 🛫
 
 An intelligent conversational bot that streamlines the flight booking process, allowing users to search for flights, compare prices, and book tickets directly through a natural language chat interface. Built using Microsoft Bot Framework and tested locally with Bot Framework Emulator.
 
