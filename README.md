@@ -8,6 +8,108 @@ An intelligent conversational bot that streamlines the flight booking process, a
 
 This project was developed during my internship at **Celebal Technologies**, a leading technology company specializing in data analytics, artificial intelligence, and digital transformation solutions. The flight booking bot represents a practical application of conversational AI in the travel industry, demonstrating modern bot development practices using Microsoft's enterprise-grade Bot Framework.
 
+## 📚 Internship Learning Journey
+
+This flight booking bot project is the culmination of an intensive 8-week Node.js learning program at Celebal Technologies. Each week built upon the previous, creating a comprehensive foundation for enterprise-level application development:
+
+### Week 1: Node.js Fundamentals
+- **What is Node.js?** - Understanding the runtime environment
+- **Installation and Setup** - Environment configuration
+- **Your First Node.js Application** - Basic application structure
+- **Node.js Architecture** - Event-driven, non-blocking I/O
+- **The Node.js Ecosystem** - NPM and package management
+- **Node.js REPL** - Interactive development environment
+- **Modules in Node.js** - CommonJS and ES6 modules
+- **Creating a Simple Server** - HTTP server basics
+- **Understanding package.json** - Project configuration
+
+### Week 2: Core Modules & Package Management
+- **File System Module** - File operations and management
+- **HTTP Module** - Building HTTP servers and clients
+- **Events Module** - Event-driven programming
+- **Util Module** - Utility functions and debugging
+- **Path Module** - File path manipulation
+- **NPM Basics and Installing Packages** - Package management
+- **Creating a Package** - Module development
+- **Version Management** - Semantic versioning
+- **NPM Scripts** - Automation and build processes
+
+### Week 3: Asynchronous Programming
+- **Callback Functions** - Handling asynchronous operations
+- **Handling Errors in Callbacks** - Error-first callback pattern
+- **Promises** - Promise-based asynchronous programming
+- **Async/Await** - Modern asynchronous syntax
+- **Event Loop** - Understanding Node.js concurrency
+- **Handling Asynchronous Operations** - Best practices
+- **File System with Promises** - Promise-based file operations
+- **Promise Chaining** - Sequential asynchronous operations
+- **Error Handling in Async/Await** - Try-catch patterns
+
+### Week 4: Express.js Framework
+- **What is Express.js?** - Web application framework
+- **Setting Up an Express Server** - Server configuration
+- **Routing and Express Router** - URL routing patterns
+- **Middleware** - Request processing pipeline
+- **Handling Requests and Responses** - HTTP request lifecycle
+- **Query Parameters and URL Parameters** - Parameter handling
+- **Static Files** - Serving static assets
+- **Template Engines** - Dynamic content rendering
+- **Express Router** - Modular routing
+
+### Week 5: Database Integration
+- **Introduction to Databases** - Database fundamentals
+- **Using MongoDB with Node.js and CRUD Operations** - NoSQL database operations
+- **Relational Databases and Node.js** - SQL database integration
+- **Database Schema Design** - Data modeling
+- **Data Validation and Sanitization** - Input validation
+- **Connecting to a Database** - Database connectivity
+- **Migrations and Seeding** - Database versioning
+- **Advanced Query Techniques** - Complex queries and optimization
+
+### Week 6: RESTful API Development
+- **Introduction to REST** - REST architectural principles
+- **Setting Up a REST API** - API structure and design
+- **Middleware for REST APIs** - API-specific middleware
+- **Authentication in APIs** - API security
+- **Error Handling in APIs** - Structured error responses
+- **Documenting APIs** - API documentation practices
+- **Testing APIs** - API testing strategies
+- **Versioning APIs** - API version management
+
+### Week 7: Authentication & Security
+- **User Authentication** - User login systems
+- **Hashing and Salting Passwords** - Password security
+- **JSON Web Tokens (JWT)** - Token-based authentication
+- **OAuth and Social Login** - Third-party authentication
+- **Session Management** - User session handling
+- **HTTPS and SSL/TLS** - Secure communication
+- **Security Best Practices** - Application security
+- **Preventing Common Attacks** - Security vulnerabilities
+- **Rate Limiting and Throttling** - API protection
+- **Dependency Security** - Package security
+
+### Week 8: Advanced Express.js
+- **Advanced Routing** - Complex routing patterns
+- **Error Handling in Express** - Centralized error handling
+- **Performance Optimization** - Application performance
+- **Middleware Stacks** - Middleware composition
+- **Express and WebSocket Integration** - Real-time communication
+- **File Uploads** - Handling file uploads
+- **Server** - Server configuration
+- **Express App Structure** - Application architecture
+
+## 🎯 How This Learning Journey Applies to the Flight Booking Bot
+
+This comprehensive learning path directly contributed to the flight booking bot's architecture and features:
+
+- **Weeks 1-2**: Foundation for the bot's Node.js server and core module usage
+- **Week 3**: Asynchronous flight API calls and promise-based operations
+- **Week 4**: Express.js server setup for bot webhook endpoints
+- **Week 5**: MySQL database integration for storing user data and bookings
+- **Week 6**: RESTful API structure for flight search and booking operations
+- **Week 7**: JWT authentication and security implementation
+- **Week 8**: Advanced Express features for bot performance and file handling
+
 ## 🚀 Project Overview
 
 This intelligent bot transforms the flight booking experience by enabling users to interact in natural language to specify their travel needs. Simply tell the bot your desired travel dates and destinations, and it presents you with the best options from various airlines, complete with real-time pricing and availability.
